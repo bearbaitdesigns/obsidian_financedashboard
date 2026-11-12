@@ -52,6 +52,9 @@ const ICON_FALLBACKS = {
   'list-checks': ['list-checks', 'list', 'check'],
   'calendar-check': ['calendar', 'check'],
   check: ['check-circle', 'circle-check'],
+  'line-chart': ['chart-line', 'trending-up', 'activity'],
+  history: ['clock', 'calendar'],
+  'calendar-plus': ['calendar', 'plus'],
 };
 function setIcon(el, name) {
   for (const n of [name, ...(ICON_FALLBACKS[name] || [])]) {
@@ -65,6 +68,7 @@ const VIEW_TYPE = 'finance-dashboard-view';
 const TABS = [
   { id: 'overview', label: 'Overview', icon: 'layout-dashboard' },
   { id: 'networth', label: 'Net Worth', icon: 'trending-up' },
+  { id: 'investments', label: 'Investments', icon: 'line-chart' },
   { id: 'spending', label: 'Spending & Savings', icon: 'credit-card' },
   { id: 'retirement', label: 'Retirement', icon: 'sunset' },
 ];
@@ -83,8 +87,8 @@ const ACCOUNT_GROUPS = {
 
 const KINDS_BY_GROUP = {
   budget: ['Checking', 'Savings', 'High-yield savings', 'Money market', 'Cash', 'Other'],
-  investment: ['Brokerage', 'Stocks', 'ETFs / index funds', 'Mutual funds', 'Bonds', 'CDs', 'Crypto', 'Other'],
-  retirement: ['401(k)', 'Roth 401(k)', '403(b)', '457(b)', 'Traditional IRA', 'Roth IRA', 'SEP IRA', 'SIMPLE IRA', 'HSA', 'Pension', 'Other'],
+  investment: ['Brokerage', 'TOD Individual', 'Stocks', 'ETFs / index funds', 'Mutual funds', 'Bonds', 'CDs', 'Crypto', 'Other'],
+  retirement: ['401(k)', 'Roth 401(k)', '403(b)', '457(b)', 'Traditional IRA', 'Rollover IRA', 'Roth IRA', 'SEP IRA', 'SIMPLE IRA', 'HSA', 'Pension', 'Other'],
   property: ['Home', 'Vehicle', 'Land', 'Rental property', 'Collectibles', 'Other'],
   debt: ['Credit card', 'Mortgage', 'Auto loan', 'Student loan', 'Personal loan', 'Line of credit', 'Medical debt', 'Other'],
 };
@@ -97,9 +101,12 @@ const DEFAULT_CATEGORIES = [
 function defaultData() {
   return {
     version: 1,
-    settings: { currency: 'USD', locale: '', incomeView: 'net', filingStatus: 'single', link: { label: 'Finance dashboard', icon: 'wallet', image: '', style: 'card', size: 'medium', reuseTab: true } },
+    settings: { currency: 'USD', locale: '', incomeView: 'net', filingStatus: 'single', link: { label: 'Finance dashboard', icon: 'wallet', image: '', style: 'card', size: 'medium', reuseTab: true },
+      invest: { showTab: true, range: '12', view: 'total', estimateContrib: true } },
     accounts: [],      // {id, name, group, kind, balance, contribution}
     history: [],       // {date:'YYYY-MM', assets, debts, net, retirement}
+    invHistory: {},    // {'YYYY-MM': {accountId: balance}} — investment & retirement accounts, one entry per month
+    invMeta: {},       // {accountId: {name, group, kind}} — so history still has a name after an account is deleted
     credit: [],        // {id, date:'YYYY-MM-DD', score, bureau}
     transactions: [],  // {id, date, desc, amount, category, source:'debit'|'credit', card, note}
     incomeHistory: [], // {id, date, reason, employer, title, gross, net, note} — gross/net are guaranteed amounts PER MONTH
@@ -188,7 +195,16 @@ function upsertSnapshot(data) {
   const i = data.history.findIndex((h) => h.date === key);
   if (i >= 0) data.history[i] = entry; else data.history.push(entry);
   data.history.sort((a, b) => a.date.localeCompare(b.date));
+  // Per-account balances for investment & retirement accounts (this month is always rewritten from current balances).
+  if (!data.invHistory || typeof data.invHistory !== 'object') data.invHistory = {};
+  if (!data.invMeta || typeof data.invMeta !== 'object') data.invMeta = {};
+  const inv = data.accounts.filter(isInvAccount);
+  for (const a of inv) data.invMeta[a.id] = { name: a.name, group: a.group, kind: a.kind || '' };
+  if (inv.length) { const m = {}; for (const a of inv) m[a.id] = Math.round(num(a.balance) * 100) / 100; data.invHistory[key] = m; }
+  else delete data.invHistory[key];
 }
+const isInvAccount = (a) => a.group === 'investment' || a.group === 'retirement';
+const invTabShown = (data) => !(data.settings && data.settings.invest && data.settings.invest.showTab === false);
 
 function ageOn(birthISO, date) {
   const [y, m, d] = (birthISO || '1990-01-01').split('-').map(Number);
@@ -1046,6 +1062,8 @@ class AccountsModal extends Modal {
     const c = this.contentEl;
     c.empty();
     this.summaryEl = c.createDiv({ cls: 'fd-manage-summary' });
+    this.pagesEl = c.createDiv({ cls: 'fd-manage-pages' });
+    this.renderPages();
     const bar = c.createDiv({ cls: 'fd-manage-toolbar' });
     const search = bar.createEl('input', { cls: 'fd-manage-search', attr: { type: 'search', placeholder: 'Search accounts…', 'aria-label': 'Search accounts' } });
     search.addEventListener('input', () => { this.query = search.value.trim().toLowerCase(); this.renderList(); });
@@ -1072,6 +1090,32 @@ class AccountsModal extends Modal {
   onClose() {
     this.plugin.listeners.delete(this.listener);
     this.contentEl.empty();
+  }
+
+  /** Dashboard pages that can be turned off (currently the Investments tab). */
+  renderPages() {
+    const el = this.pagesEl;
+    el.empty();
+    const p = this.plugin;
+    const head = el.createDiv({ cls: 'fd-manage-group-head' });
+    head.createSpan({ cls: 'fd-manage-group-name', text: 'Dashboard pages' });
+    const row = el.createDiv({ cls: 'fd-manage-row fd-manage-toggle-row' });
+    const name = row.createDiv({ cls: 'fd-manage-name' });
+    const t = name.createDiv({ cls: 'fd-manage-title' });
+    setIcon(t.createSpan({ cls: 'fd-btn-icon' }), 'line-chart');
+    t.createSpan({ text: ' Investments tab' });
+    name.createDiv({ cls: 'fd-muted fd-manage-kind', text: 'Growth charts for investment & retirement accounts. Hiding it keeps saving monthly history, so nothing is lost if you turn it back on.' });
+    const on = invTabShown(p.data);
+    const tg = row.createDiv({ cls: 'checkbox-container' + (on ? ' is-enabled' : ''), attr: { role: 'switch', tabindex: '0', 'aria-checked': String(on), 'aria-label': 'Show Investments tab' } });
+    tg.createEl('input', { attr: { type: 'checkbox', tabindex: '-1' } }).checked = on;
+    const flip = async () => {
+      this.suppress = true;
+      try { await p.setInvTabShown(!invTabShown(p.data)); } finally { this.suppress = false; }
+      this.renderPages();
+      new Notice(invTabShown(p.data) ? 'Investments tab shown.' : 'Investments tab hidden. Turn it back on here or in Settings.');
+    };
+    tg.addEventListener('click', flip);
+    tg.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
   }
 
   renderSummary() {
@@ -2810,7 +2854,7 @@ function taxInfo() {
       'Interest is taxable income in the year it’s credited to your account, even if you don’t withdraw it. Banks send Form 1099-INT for $10 or more.',
       'Interest on U.S. Treasury bills, notes and bonds is taxed federally but exempt from state and local income tax.'],
     effect: 'Counted at full value — no tax is due when you spend it.', short: 'Interest is taxed as ordinary income each year; the balance itself isn’t taxed.', sources: ['tc403'] },
-  taxable: { title: 'Taxable investments', covers: 'Brokerage accounts, stocks, ETFs and funds, bonds', icon: 'trending-up',
+  taxable: { title: 'Taxable investments', covers: 'Brokerage and TOD individual accounts, stocks, ETFs and funds, bonds', icon: 'trending-up',
     points: ['Dividends are taxed each year: qualified dividends at the lower long-term capital-gain rates, others as ordinary income.',
       `Growth isn’t taxed until you sell. Gains on investments held more than one year are long-term: for ${Y}, 0% up to ${usd(R.ltcg0Single)} of taxable income (${usd(R.ltcg0Joint)} joint), 15% up to ${usd(R.ltcg15Single)} (${usd(R.ltcg15Joint)} joint), 20% above. Held one year or less, they’re taxed as ordinary income.`,
       `Losses offset gains, and up to ${usd(R.capLoss)} a year (${usd(R.capLossMfs)} if married filing separately) of extra losses can offset other income; the rest carries forward.`,
@@ -3136,6 +3180,7 @@ function kindSummary(kind) {
     'Money market': 'Interest-bearing deposit account, often with check-writing; the interest is taxable each year.',
     'Cash': 'Physical cash on hand — it earns nothing and isn’t taxed.',
     'Brokerage': 'Taxable investment account for stocks, funds and bonds; dividends are taxed each year and gains when you sell.',
+    'TOD Individual': 'Individual brokerage account with a transfer-on-death beneficiary, so it passes to them without probate; while you’re alive it’s taxed like any brokerage account — dividends yearly, gains when you sell.',
     'Stocks': 'Shares of individual companies; dividends are taxed each year and gains when you sell.',
     'ETFs / index funds': 'Low-cost funds that hold many investments at once; taxed like stocks — dividends yearly, gains when you sell.',
     'Mutual funds': 'Professionally managed pools of investments that can pay taxable distributions even if you don’t sell.',
@@ -3147,6 +3192,7 @@ function kindSummary(kind) {
     '403(b)': `Retirement plan for public schools and nonprofits that works like a 401(k) (up to ${usd(R.k401)} in ${Y}); withdrawals are taxed as income.`,
     '457(b)': `Retirement plan for state and local government workers (up to ${usd(R.k401)} in ${Y}); withdrawals are taxed as income.`,
     'Traditional IRA': `Individual retirement account where contributions may be deductible (up to ${usd(R.ira)} in ${Y}) and withdrawals are taxed as income.`,
+    'Rollover IRA': `Traditional IRA that holds money moved from a former employer’s 401(k) or similar plan; a direct rollover isn’t taxed, it keeps growing tax-deferred, and withdrawals are taxed as income.`,
     'Roth IRA': `Individual retirement account funded with after-tax money (up to ${usd(R.ira)} in ${Y}); qualified withdrawals are tax-free, with no required withdrawals in your lifetime.`,
     'SEP IRA': 'Retirement account for self-employed people and small businesses that’s taxed like a traditional IRA.',
     'SIMPLE IRA': 'Retirement plan for small employers that’s taxed like a traditional IRA.',
@@ -3328,6 +3374,325 @@ function taxRulesBar(parent, plugin) {
 
 /* --------------------------------------------------------------- dashboard */
 
+/* ============================================== investments: history & growth */
+
+const INV_COLORS = { total: '#2F8F9D', investment: PALETTE[0], retirement: PALETTE[2], moneyIn: '#79706E', growthUp: '#54A24B', growthDown: '#E45756', contrib: '#4C78A8' };
+const INV_RANGES = [['6', '6M'], ['12', '1Y'], ['36', '3Y'], ['all', 'All']];
+const INV_VIEWS = [['total', 'Total'], ['group', 'By group'], ['account', 'By account']];
+
+function monthGap(a, b) {
+  const [y1, m1] = a.split('-').map(Number), [y2, m2] = b.split('-').map(Number);
+  return (y2 - y1) * 12 + (m2 - m1);
+}
+
+/** Name, group and yearly contribution for an account id, including accounts that have since been deleted. */
+function invAccountInfo(data, id) {
+  const a = data.accounts.find((x) => x.id === id);
+  const m = (data.invMeta || {})[id];
+  if (a) {
+    const group = isInvAccount(a) ? a.group : (m && m.group) || 'investment';
+    return { id, name: a.name, group, kind: a.kind || '', contribution: isInvAccount(a) ? num(a.contribution) : 0, open: isInvAccount(a), account: a };
+  }
+  return m ? { id, name: m.name, group: m.group, kind: m.kind || '', contribution: 0, open: false } : null;
+}
+
+/**
+ * Month-by-month balances of investment & retirement accounts. Months with per-account history are "detailed";
+ * older months that only have a net-worth snapshot still show the retirement total.
+ */
+function invTimeline(data) {
+  const ih = data.invHistory || {};
+  const snaps = {};
+  for (const h of data.history || []) snaps[h.date] = h;
+  const keys = new Set(Object.keys(ih).filter((k) => /^\d{4}-\d{2}$/.test(k)));
+  for (const h of data.history || []) if (h.retirement != null && h.retirement !== '') keys.add(h.date);
+  return [...keys].sort().map((date) => {
+    const m = ih[date];
+    if (m && Object.keys(m).length) {
+      let taxable = 0, retirement = 0, nTax = 0;
+      const byAcct = {};
+      for (const id in m) {
+        const info = invAccountInfo(data, id);
+        if (!info) continue;
+        const v = num(m[id]);
+        byAcct[id] = v;
+        if (info.group === 'retirement') retirement += v; else { taxable += v; nTax++; }
+      }
+      return { date, taxable, retirement, total: taxable + retirement, byAcct, detailed: true };
+    }
+    return { date, taxable: null, retirement: num(snaps[date].retirement), total: null, byAcct: {}, detailed: false };
+  });
+}
+
+function invValue(row, key) {
+  if (key === 'total') return row.total;
+  if (key === 'taxable') return row.taxable;
+  if (key === 'retirement') return row.retirement;
+  return row.byAcct[key] != null ? row.byAcct[key] : null;
+}
+const invKeyMatches = (info, key) => key === 'total' || (key === 'taxable' && info.group !== 'retirement') || (key === 'retirement' && info.group === 'retirement') || info.id === key;
+
+/** Estimated money added to `key` during the months leading up to `row`, from each account's yearly contribution. */
+function invContrib(data, row, key, months) {
+  if (!data.settings.invest || data.settings.invest.estimateContrib === false) return 0;
+  const ids = row.detailed ? Object.keys(row.byAcct) : data.accounts.filter((a) => a.group === 'retirement').map((a) => a.id);
+  let c = 0;
+  for (const id of ids) {
+    const info = invAccountInfo(data, id);
+    if (info && invKeyMatches(info, key)) c += (info.contribution / 12) * months;
+  }
+  return c;
+}
+
+/**
+ * Growth between two timeline rows. Money in = estimated contributions + balances of accounts that appear
+ * (minus accounts that disappear), so opening or rolling over an account isn't counted as market growth.
+ * Return uses the Modified Dietz method: growth ÷ (start + half of money in).
+ */
+function invGrowth(data, tl, a, b, key = 'total') {
+  if (a < 0 || b <= a || !tl[a] || !tl[b]) return null;
+  const start = invValue(tl[a], key), end = invValue(tl[b], key);
+  if (start == null || end == null) return null;
+  let contrib = 0, flows = 0;
+  for (let i = a + 1; i <= b; i++) {
+    const p = tl[i - 1], r = tl[i];
+    contrib += invContrib(data, r, key, monthGap(p.date, r.date));
+    if (p.detailed && r.detailed && (key === 'total' || key === 'taxable' || key === 'retirement')) {
+      for (const id in r.byAcct) if (!(id in p.byAcct)) { const info = invAccountInfo(data, id); if (info && invKeyMatches(info, key)) flows += r.byAcct[id]; }
+      for (const id in p.byAcct) if (!(id in r.byAcct)) { const info = invAccountInfo(data, id); if (info && invKeyMatches(info, key)) flows -= p.byAcct[id]; }
+    }
+  }
+  const moneyIn = contrib + flows;
+  const growth = end - start - moneyIn;
+  const denom = start + moneyIn / 2;
+  return { from: tl[a].date, to: tl[b].date, months: monthGap(tl[a].date, tl[b].date), start, end, change: end - start, contrib, flows, moneyIn, growth, ret: denom > 0 ? growth / denom : null };
+}
+
+/** Index of the row closest to `target` (exact, else the first after it) that has a value for key. */
+function invIndexFrom(tl, target, key, before) {
+  for (let i = 0; i < tl.length; i++) {
+    if (tl[i].date < target) continue;
+    if (before && tl[i].date >= before) return -1;
+    if (invValue(tl[i], key) != null) return i;
+  }
+  return -1;
+}
+
+/** Everything the Investments page, its tooltips and explainer need. */
+function invStats(data) {
+  const tl = invTimeline(data);
+  const now = monthKey(new Date());
+  const accts = data.accounts.filter(isInvAccount);
+  const taxable = sum(accts.filter((a) => a.group === 'investment'), (a) => a.balance);
+  const retirement = sum(accts.filter((a) => a.group === 'retirement'), (a) => a.balance);
+  const last = tl.length - 1;
+  const lastIsNow = last >= 0 && tl[last].date === now;
+  let prevIdx = -1;
+  for (let i = last - 1; i >= 0; i--) if (tl[i].total != null) { prevIdx = i; break; }
+  const m1 = lastIsNow && prevIdx >= 0 ? invGrowth(data, tl, prevIdx, last) : null;
+  const yIdx = invIndexFrom(tl, addMonths(now, -12), 'total', now);
+  const y1 = lastIsNow && yIdx >= 0 ? invGrowth(data, tl, yIdx, last) : null;
+  const detailed = tl.filter((r) => r.detailed);
+  return { tl, accts, taxable, retirement, total: taxable + retirement, contribYr: sum(accts, (a) => num(a.contribution)),
+    m1, y1, y1Exact: !!(y1 && y1.from === addMonths(now, -12)), est: data.settings.invest.estimateContrib !== false,
+    months: detailed.length, first: detailed[0] ? detailed[0].date : null, snapshotOnly: tl.length - detailed.length };
+}
+
+const retLabel = (g, f) => (g && g.ret != null ? signed(g.ret, (v) => f.pct(v, 1)) : '—');
+
+Object.assign(SOURCES, {
+  dietz: { title: 'Modified Dietz method', by: 'Wikipedia', url: 'https://en.wikipedia.org/wiki/Modified_Dietz_method',
+    why: 'The formula used for “estimated return”: growth divided by the starting balance plus half of the money added.' },
+  finraTod: { title: 'When a Brokerage Account Holder Dies — What Comes Next?', by: 'FINRA', url: 'https://www.finra.org/investors/alerts/plan-transition-what-you-should-know-about-transfer-brokerage-account-assets-death',
+    why: 'How transfer-on-death (TOD) registration passes a brokerage account to a beneficiary without probate.' },
+  irsRollover: { title: 'Rollovers of retirement plan and IRA distributions', by: 'IRS', url: 'https://www.irs.gov/retirement-plans/plan-participant-employee/rollovers-of-retirement-plan-and-ira-distributions',
+    why: 'Direct vs 60-day rollovers, and why a direct rollover into an IRA isn’t taxed.' },
+  tc413: { title: 'Topic no. 413, Rollovers from retirement plans', by: 'IRS', url: 'https://www.irs.gov/taxtopics/tc413',
+    why: 'Short summary of rollover rules, withholding on indirect rollovers and the 60-day limit.' },
+});
+const INV_SOURCE_GROUPS = [
+  ['Growth & return', ['dietz', 'compound', 'fees']],
+  ['TOD & rollover accounts', ['finraTod', 'irsRollover', 'tc413']],
+  ['How investments are taxed', ['tc404', 'tc409', 'pub590b']],
+];
+
+Object.assign(GLOSSARY, {
+  invTotal: { title: 'Total invested', body: ['The combined balance of your taxable investment accounts and your retirement accounts today, before any tax you’d owe on selling or withdrawing.'],
+    calc: ({ iv, f }) => `Taxable ${f.money(iv.taxable)} + retirement ${f.money(iv.retirement)} = ${f.money(iv.total)}` },
+  invTaxable: { title: 'Taxable investments', body: ['Brokerage, TOD individual, stock, fund, bond and crypto accounts held outside retirement plans. You can sell any time; dividends are taxed yearly and gains when you sell.'],
+    calc: ({ iv, f }) => `${iv.accts.filter((a) => a.group === 'investment').length} accounts · ${f.money(iv.taxable)}` },
+  invRetirement: { title: 'Retirement accounts', body: ['401(k), 403(b), IRAs (including rollover IRAs), Roth accounts, HSAs and pensions. They grow tax-advantaged but usually limit withdrawals before 59½.'],
+    calc: ({ iv, f }) => `${iv.accts.filter((a) => a.group === 'retirement').length} accounts · ${f.money(iv.retirement)} · ${f.money(sum(iv.accts.filter((a) => a.group === 'retirement'), (a) => num(a.contribution)))}/yr contributions` },
+  invMonthChange: { title: 'Change this month', body: ['How much your invested total moved since the previous month you have, split into money you put in and market growth.'],
+    calc: ({ iv, f }) => (iv.m1 ? `${f.money(iv.m1.end)} − ${f.money(iv.m1.start)} = ${signed(iv.m1.change, (v) => f.money(v))} (${signed(iv.m1.moneyIn, (v) => f.money(v))} put in, ${signed(iv.m1.growth, (v) => f.money(v))} market)` : 'Needs last month’s balances — add them with “Past balances”.') },
+  marketGrowth: { title: 'Market growth (estimated)', body: ['The part of the change that came from the market — interest, dividends and price moves — rather than money you added.',
+    'Market growth = ending balance − starting balance − money put in.'],
+    calc: ({ iv, f }) => (iv.y1 ? `${f.money(iv.y1.end)} − ${f.money(iv.y1.start)} − ${f.money(iv.y1.moneyIn)} = ${signed(iv.y1.growth, (v) => f.money(v))} since ${monthLabel(iv.y1.from, true)}` : 'Needs at least two months of history.') },
+  estReturn: { title: 'Estimated return', body: ['Your market growth as a percentage, adjusted for when money was added (the Modified Dietz method). It’s an estimate: it assumes contributions arrived evenly through the period.',
+    'Return = market growth ÷ (starting balance + ½ × money put in).'],
+    calc: ({ iv, f }) => (iv.y1 && iv.y1.ret != null ? `${f.money(iv.y1.growth)} ÷ (${f.money(iv.y1.start)} + ½ × ${f.money(iv.y1.moneyIn)}) = ${f.pct(iv.y1.ret, 1)} over ${iv.y1.months} month${iv.y1.months === 1 ? '' : 's'}` : null) },
+  moneyIn: { title: 'Money put in (estimated)', body: ['Your yearly contributions (set on each account, including any employer match) spread evenly over the months, plus the balance of any account that was opened or rolled in during the period, minus accounts that were closed.',
+    'Turn the estimate off in Settings → Investments if your contributions vary a lot; then all change counts as growth.'],
+    calc: ({ iv, f }) => (iv.est ? `${f.money(iv.contribYr)}/yr from your accounts’ contribution settings (${f.money(iv.contribYr / 12)}/mo).` : 'Contribution estimate is off — all change counts as growth.') },
+  invHistory: { title: 'Monthly account history', body: ['Each month, every investment and retirement account’s balance is saved when you update balances. Add or correct earlier months with “Past balances”.',
+    'Months from before per-account history only have the retirement total from your net-worth snapshot.'],
+    calc: ({ iv }) => (iv.months ? `${iv.months} month${iv.months === 1 ? '' : 's'} of account history since ${monthLabel(iv.first, true)}${iv.snapshotOnly ? ` · ${iv.snapshotOnly} older month${iv.snapshotOnly === 1 ? '' : 's'} with the retirement total only` : ''}.` : 'No account history yet.') },
+  invPerAccount: { title: 'Account performance', body: ['Each account’s change over one month and over the last 12 months (or since its first saved month), with its estimated return after taking out that account’s contributions.'] },
+  taxMix: { title: 'Tax treatment mix', body: ['How your invested money splits by how it’s taxed. Tax-deferred money is taxed when withdrawn, Roth money comes out tax-free if qualified, HSA money is tax-free for medical costs, and taxable accounts are taxed on dividends and gains as you go.',
+    'Having some in each gives you more control over taxes in retirement.'],
+    calc: ({ iv, f }) => { const r = sum(iv.accts.filter((a) => /roth/i.test(a.kind || '')), (a) => a.balance); return iv.total ? `Roth ${f.pct(r / iv.total)} of your invested total.` : null; } },
+  growthSources: { title: 'Where the change came from', body: ['Each month’s change split into money you put in (blue) and market growth or loss (green or red). Bars above the line added to your balance; bars below took away.'] },
+  balanceVsIn: { title: 'Balance vs money put in', body: ['The solid line is your actual balance. The dashed line is where you’d be if your money had earned nothing: the starting balance plus everything you put in. The gap between them is your market growth.'] },
+  tod: { title: 'TOD Individual', body: ['An individual brokerage account with a transfer-on-death beneficiary. When you die it passes straight to them without probate; until then it’s yours alone and taxed like any brokerage account.'] },
+  rollover: { title: 'Rollover IRA', body: ['A traditional IRA that holds money moved from a former employer’s 401(k), 403(b) or similar plan. A direct rollover isn’t taxed; the money keeps growing tax-deferred and withdrawals are taxed as income.'] },
+});
+
+/** Tiny trend line for a table cell. */
+function sparkline(parent, values, opts = {}) {
+  const pts = values.map((v, i) => [i, v]).filter((p) => p[1] != null);
+  const W = opts.width || 96, H = opts.height || 26;
+  const wrap = parent.createSpan({ cls: 'fd-spark' });
+  if (pts.length < 2) { wrap.createSpan({ cls: 'fd-muted', text: '—' }); return wrap; }
+  const lo = Math.min(...pts.map((p) => p[1])), hi = Math.max(...pts.map((p) => p[1]));
+  const x = (i) => 2 + (i * (W - 4)) / Math.max(1, values.length - 1);
+  const y = (v) => 3 + (1 - (hi === lo ? 0.5 : (v - lo) / (hi - lo))) * (H - 6);
+  const svg = svgEl(wrap, 'svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'fd-svg', 'aria-hidden': 'true' });
+  const up = pts[pts.length - 1][1] >= pts[0][1];
+  const color = opts.color || (up ? 'var(--color-green)' : 'var(--color-red)');
+  svgEl(svg, 'path', { d: pts.map((p, k) => `${k ? 'L' : 'M'}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(''), fill: 'none', style: `stroke:${color}`, 'stroke-width': 1.75, 'stroke-linejoin': 'round' });
+  const lp = pts[pts.length - 1];
+  svgEl(svg, 'circle', { cx: x(lp[0]), cy: y(lp[1]), r: 2.4, style: `fill:${color}` });
+  if (opts.tip) { wrap.addClass('has-tip'); hover(wrap, opts.tip); }
+  return wrap;
+}
+
+/**
+ * Diverging stacked columns: money put in and market growth per month. rows[{label, contrib, growth, tip}].
+ * Positive parts stack up from zero, negative parts stack down.
+ */
+function flowChart(parent, rows, opts = {}) {
+  if (!rows.length) return emptyState(parent, opts.emptyText);
+  const W = chartWidth(parent), H = opts.height || 210, P = { l: 58, r: 10, t: 12, b: 26 };
+  let hi = 0, lo = 0;
+  for (const r of rows) {
+    hi = Math.max(hi, Math.max(0, r.contrib) + Math.max(0, r.growth));
+    lo = Math.min(lo, Math.min(0, r.contrib) + Math.min(0, r.growth));
+  }
+  const sc = niceScale(lo, hi || 1);
+  if (lo >= 0) sc.min = 0;
+  const y = (v) => P.t + (1 - (v - sc.min) / (sc.max - sc.min)) * (H - P.t - P.b);
+  const bw = (W - P.l - P.r) / rows.length;
+  const fmt = opts.fmt || String;
+  const wrap = parent.createDiv({ cls: 'fd-chart' });
+  const svg = svgEl(wrap, 'svg', { viewBox: `0 0 ${W} ${H}`, class: 'fd-svg', role: 'img', 'aria-label': opts.title || 'Where the change came from' });
+  for (let v = sc.min; v <= sc.max + sc.step / 2; v += sc.step) {
+    svgEl(svg, 'line', { x1: P.l, x2: W - P.r, y1: y(v), y2: y(v), class: Math.abs(v) < sc.step / 2 ? 'fd-zeroline' : 'fd-gridline' });
+    svgEl(svg, 'text', { x: P.l - 8, y: y(v) + 4, 'text-anchor': 'end', class: 'fd-axis' }, fmt(Math.abs(v) < sc.step / 2 ? 0 : v));
+  }
+  const maxX = Math.max(2, Math.floor((W - P.l - P.r) / 56));
+  const every = Math.max(1, Math.ceil(rows.length / maxX));
+  const cols = rows.map((r, i) => {
+    const x0 = P.l + i * bw + bw * 0.18, w = Math.max(2, bw * 0.64);
+    const g = svgEl(svg, 'g', { class: 'fd-col' });
+    let up = 0, down = 0;
+    for (const [v, color] of [[r.contrib, INV_COLORS.contrib], [r.growth, r.growth >= 0 ? INV_COLORS.growthUp : INV_COLORS.growthDown]]) {
+      if (!v) continue;
+      if (v > 0) { svgEl(g, 'rect', { x: x0, y: y(up + v), width: w, height: Math.max(0.5, y(up) - y(up + v)), fill: color, rx: 1.5 }); up += v; }
+      else { svgEl(g, 'rect', { x: x0, y: y(down), width: w, height: Math.max(0.5, y(down + v) - y(down)), fill: color, rx: 1.5 }); down += v; }
+    }
+    if ((i % every === 0 && rows.length - 1 - i >= every) || i === rows.length - 1) svgEl(svg, 'text', { x: x0 + w / 2, y: H - 6, 'text-anchor': 'middle', class: 'fd-axis' }, r.label);
+    return g;
+  });
+  rows.forEach((r, i) => {
+    const hit = svgEl(svg, 'rect', { x: P.l + i * bw, y: P.t, width: bw, height: H - P.t - P.b, fill: 'transparent', class: 'fd-hit' });
+    hover(hit, () => { setCls(cols[i], 'is-hover', true); return r.tip; }, () => setCls(cols[i], 'is-hover', false));
+  });
+  legend(wrap, [{ label: 'Money put in (est.)', color: INV_COLORS.contrib }, { label: 'Market growth', color: INV_COLORS.growthUp }, { label: 'Market loss', color: INV_COLORS.growthDown }]);
+  return wrap;
+}
+
+/** Explainer opened from the (?) on the Investments page. */
+class InvestmentsInfoModal extends Modal {
+  constructor(app, plugin) { super(app); this.plugin = plugin; }
+  onOpen() {
+    const d = this.plugin.data, f = new Fmt(d.settings), iv = invStats(d);
+    const ctx = () => ({ iv, f });
+    this.modalEl.addClass('fd-modal', 'fd-info-modal');
+    this.titleEl.setText('How investment growth is calculated');
+    const c = this.contentEl;
+    c.empty();
+    const top = c.createDiv({ cls: 'fd-callout is-on-track fd-nw-summary' });
+    top.createEl('strong', { text: `Invested ${f.money(iv.total)}. ` });
+    top.createSpan({ text: iv.y1 ? `${signed(iv.y1.change, (v) => f.money(v))} since ${monthLabel(iv.y1.from, true)}: about ${signed(iv.y1.moneyIn, (v) => f.money(v))} you put in and ${signed(iv.y1.growth, (v) => f.money(v))} from the market (${retLabel(iv.y1, f)}).` : 'Add past balances to see how your investments have grown.' });
+
+    const section = (title, icon) => {
+      const s = c.createDiv({ cls: 'fd-info-section' });
+      const h = s.createEl('h3');
+      setIcon(h.createSpan({ cls: 'fd-info-h-icon' }), icon);
+      h.createSpan({ text: title });
+      return s;
+    };
+    const step = (parent, n, title, key, text) => {
+      const st = parent.createDiv({ cls: 'fd-info-step' });
+      st.createDiv({ cls: 'fd-info-step-num', text: String(n) });
+      const b = st.createDiv({ cls: 'fd-info-step-body' });
+      const h = b.createDiv({ cls: 'fd-info-step-title' });
+      if (key) termEl(h, title, key, ctx); else h.setText(title);
+      b.createDiv({ cls: 'fd-info-step-text', text });
+      const g = key && GLOSSARY[key] && GLOSSARY[key].calc ? (() => { try { return GLOSSARY[key].calc(ctx()); } catch (e) { return null; } })() : null;
+      if (g) b.createDiv({ cls: 'fd-info-formula', text: g });
+    };
+
+    const s1 = section('How the numbers are calculated', 'calculator');
+    step(s1, 1, 'Total invested', 'invTotal', 'Adds up today’s balances of your taxable investment and retirement accounts.');
+    step(s1, 2, 'Money put in', 'moneyIn', 'Estimates how much you added: each account’s yearly contribution ÷ 12 for every month, plus accounts opened or rolled in (minus accounts closed).');
+    step(s1, 3, 'Market growth', 'marketGrowth', 'Whatever change isn’t explained by money put in came from the market — interest, dividends and price changes, after fund fees.');
+    step(s1, 4, 'Estimated return', 'estReturn', 'Turns market growth into a percentage that isn’t inflated by new deposits, using the Modified Dietz method.');
+
+    const s2 = section('Where the history comes from', 'history');
+    step(s2, 1, 'Monthly account history', 'invHistory', 'Saved automatically every time you update balances, one balance per account per month.');
+    { const ul = s2.createEl('ul', { cls: 'fd-info-tips' });
+      for (const x of ['Use “Past balances” to enter any earlier month from old statements — pick the month and type each account’s balance. Leave an account blank if you didn’t have it yet.',
+        'If that month has a net-worth snapshot, it can be updated too, so the Net Worth and Retirement charts stay in step.',
+        'Deleted accounts keep their history and still count in totals for the months they existed.',
+        'A transfer or rollover between two of your accounts in the same month cancels out and isn’t counted as growth.']) ul.createEl('li', { text: x });
+    }
+
+    const s3 = section('TOD and rollover accounts', 'landmark');
+    for (const [k, kind] of [['tod', 'TOD Individual'], ['rollover', 'Rollover IRA']]) {
+      const p = s3.createDiv({ cls: 'fd-info-step' });
+      const b = p.createDiv({ cls: 'fd-info-step-body' });
+      termEl(b.createDiv({ cls: 'fd-info-step-title' }), kind, k, ctx);
+      b.createDiv({ cls: 'fd-info-step-text', text: kindSummary(kind) });
+    }
+
+    const s4 = section('Keep in mind', 'alert-triangle');
+    { const ul = s4.createEl('ul', { cls: 'fd-info-tips' });
+      for (const x of ['Contributions are estimated from today’s settings, not your real deposits, so growth for a single month can be off. Longer periods even out.',
+        'Returns aren’t annualized unless the period is exactly 12 months, and past growth doesn’t predict future returns.',
+        'Balances are before tax; selling taxable investments or withdrawing from tax-deferred accounts can owe tax.',
+        'This is general information, not investment, tax or financial advice.']) ul.createEl('li', { text: x });
+    }
+
+    const s5 = section('Sources & further reading', 'book-open');
+    for (const [group, keys] of INV_SOURCE_GROUPS) {
+      s5.createDiv({ cls: 'fd-src-group', text: group });
+      const ul = s5.createEl('ul', { cls: 'fd-src-list' });
+      for (const k of keys) {
+        const s = SOURCES[k], li = ul.createEl('li');
+        sourceLink(li, k);
+        li.createSpan({ cls: 'fd-muted', text: ` — ${s.by}` });
+        li.createDiv({ cls: 'fd-src-why', text: s.why });
+      }
+    }
+    const b = c.createDiv({ cls: 'fd-form-buttons fd-info-buttons' });
+    b.createDiv({ cls: 'fd-spacer' });
+    mkButton(b, 'history', 'Monthly history', () => { this.close(); this.plugin.manageInvHistory(); });
+    mkButton(b, 'calendar-plus', 'Add past balances', () => { this.close(); this.plugin.editPastBalances(); }, 'mod-cta');
+  }
+  onClose() { Tip.hide(); this.contentEl.empty(); }
+}
+
 class Dashboard {
   constructor(plugin, el, opts = {}) {
     this.plugin = plugin;
@@ -3356,7 +3721,8 @@ class Dashboard {
     if (!this.embedded) this.renderHeader();
     const body = this.el.createDiv({ cls: 'fd-body' });
     if (!this.data.accounts.length && !this.data.transactions.length) { this.renderWelcome(body); return; }
-    const fn = { overview: this.renderOverview, networth: this.renderNetWorth, spending: this.renderSpending, retirement: this.renderRetirement }[this.tab] || this.renderOverview;
+    if (this.tab === 'investments' && !invTabShown(this.data) && !this.embedded) this.tab = 'overview';
+    const fn = { overview: this.renderOverview, networth: this.renderNetWorth, investments: this.renderInvestments, spending: this.renderSpending, retirement: this.renderRetirement }[this.tab] || this.renderOverview;
     fn.call(this, body);
     scroller.scrollTop = top;
   }
@@ -3375,6 +3741,7 @@ class Dashboard {
     gear.addClass('fd-gear');
     const nav = this.el.createDiv({ cls: 'fd-tabs', attr: { role: 'tablist' } });
     for (const t2 of TABS) {
+      if (t2.id === 'investments' && !invTabShown(this.data)) continue;
       const b = nav.createEl('button', { cls: 'fd-tab' + (t2.id === this.tab ? ' is-active' : ''), attr: { role: 'tab', 'aria-selected': String(t2.id === this.tab) } });
       const ic = b.createSpan({ cls: 'fd-tab-icon' });
       setIcon(ic, t2.icon);
@@ -3529,13 +3896,30 @@ class Dashboard {
     st.setText(retirementSentence(plan, f));
     rt.createDiv({ cls: 'fd-prediction-line', text: 'Prediction based on your inputs — not a guarantee or financial advice.' });
 
+    // Investments summary
+    if (invTabShown(d)) {
+      const iv = invStats(d);
+      const ctx0 = this.retCtx;
+      this.retCtx = () => Object.assign(ctx0(), { iv });
+      const ic = this.card(grid, 'Investments', { sub: iv.y1 ? `Since ${monthLabel(iv.y1.from, true)}` : 'Taxable + retirement', link: 'investments' });
+      const rows = iv.tl.filter((r) => r.total != null).slice(-12);
+      lineChart(ic, { labels: rows.map((r) => monthLabel(r.date)), series: [{ name: 'Total invested', color: INV_COLORS.total, values: rows.map((r) => r.total), area: true }],
+        fmt: (v) => f.compact(v), tipFmt: (v) => f.money(v), height: 150, maxXLabels: 4, emptyText: 'Add past balances to see growth' });
+      const facts = ic.createDiv({ cls: 'fd-facts' });
+      this.fact(facts, 'Total invested', f.money(iv.total), 'invTotal');
+      if (iv.y1) {
+        this.fact(facts, 'Money put in (est.)', signed(iv.y1.moneyIn, (v) => f.money(v)), 'moneyIn');
+        this.fact(facts, 'Market growth', `${signed(iv.y1.growth, (v) => f.money(v))} (${retLabel(iv.y1, f)})`, 'marketGrowth');
+      }
+    }
+
     // Income (net / gross / both) and this month's notes
     this.renderIncomeCard(grid);
     const nc = this.card(grid, 'Notes', { sub: monthLabel(curKey, true), tools: (tl) => this.button(tl, 'plus', 'Note', () => this.plugin.editBalanceNote()) });
     this.notesList(nc, notesFor(d, curKey, f), { limit: 5, emptyText: 'No notes yet this month. Add one when you update balances or log a transaction.' });
 
     // Insights
-    const ins = this.card(grid, 'Things to look at', { span: 3 });
+    const ins = this.card(grid, 'Things to look at', { span: invTabShown(d) ? 2 : 3 });
     const list = ins.createEl('ul', { cls: 'fd-insights' });
     for (const item of insights(d, f, plan)) {
       const li = list.createEl('li', { cls: `is-${item.tone}` });
@@ -3799,9 +4183,10 @@ class Dashboard {
       if (!list.length) continue;
       if (g) {
         const gr = tb.createEl('tr', { cls: 'fd-group-row' });
-        termEl(gr.createEl('td', { attr: { colspan: cols.length - 1 } }), ACCOUNT_GROUPS[g], `grp_${g}`, () => ({ nw: nwStats(this.data), f }));
+        const tc = opts.totalCol || cols.length - 1;
+        termEl(gr.createEl('td', { attr: { colspan: tc } }), ACCOUNT_GROUPS[g], `grp_${g}`, () => ({ nw: nwStats(this.data), f }));
         gr.createEl('td', { cls: 'is-num', text: (g === 'debt' ? '−' : '') + f.money(sum(list, (a) => Math.abs(num(a.balance)))) });
-        gr.createEl('td');
+        gr.createEl('td', { attr: { colspan: cols.length - tc } });
       }
       for (const a of list) {
         const tr = tb.createEl('tr', { cls: 'is-clickable' });
@@ -3815,6 +4200,219 @@ class Dashboard {
         this.iconButton(act, 'pencil', 'Edit', () => this.plugin.editAccount(a));
       }
     }
+  }
+
+  /* -------------------------------------------------------- investments */
+  renderInvestments(body) {
+    const d = this.data, f = this.fmt;
+    const iv = invStats(d);
+    const tl = iv.tl;
+    const st = d.settings.invest;
+    if (!this.invRange) this.invRange = st.range || '12';
+    if (!this.invView) this.invView = st.view || 'total';
+    this.retCtx = () => ({ iv, f });
+    const now = monthKey(new Date());
+    const money = (v) => f.money(v), sMoney = (v) => signed(v, money);
+
+    // Toolbar
+    const bar = body.createDiv({ cls: 'fd-toolbar fd-ret-toolbar' });
+    const lead = bar.createDiv({ cls: 'fd-ret-lead' });
+    lead.createSpan({ cls: 'fd-muted', text: `${iv.accts.length} account${iv.accts.length === 1 ? '' : 's'} · ` });
+    termEl(lead, iv.months ? `${iv.months} month${iv.months === 1 ? '' : 's'} of history` : 'No history yet', 'invHistory', this.retCtx);
+    lead.createSpan({ cls: 'fd-muted', text: ' · ' });
+    termEl(lead, iv.est ? 'contributions estimated from your settings' : 'contribution estimate off', 'moneyIn', this.retCtx);
+    const ra = bar.createDiv({ cls: 'fd-ret-actions' });
+    if (!this.embedded) {
+      this.button(ra, 'calendar-plus', 'Past balances', () => this.plugin.editPastBalances(), 'mod-cta');
+      this.iconButton(ra, 'history', 'Monthly history', () => this.plugin.manageInvHistory());
+    }
+    const info = this.iconButton(ra, 'circle-help', 'How investment growth is calculated', () => this.plugin.openInvestmentsInfo());
+    info.addClass('fd-info-btn');
+    info.setAttr('title', 'How is this calculated?');
+
+    if (!iv.accts.length && !tl.length) {
+      const c = this.card(body, 'Track your investments', { span: 3 });
+      c.createEl('p', { text: 'Add a brokerage, TOD individual, 401(k), IRA or other investment or retirement account. Each month’s balances are saved so you can watch them grow.' });
+      const b = c.createDiv({ cls: 'fd-row-buttons' });
+      this.button(b, 'plus', 'Add investment account', () => this.plugin.editAccount({ group: 'investment' }, true), 'mod-cta');
+      this.button(b, 'plus', 'Add retirement account', () => this.plugin.editAccount({ group: 'retirement' }, true));
+      return;
+    }
+
+    // KPIs
+    const kpis = body.createDiv({ cls: 'fd-kpis' });
+    this.kpi(kpis, 'Total invested', money(iv.total), { icon: 'line-chart', help: 'invTotal',
+      delta: iv.m1 ? iv.m1.change : null, deltaText: iv.m1 ? `${money(Math.abs(iv.m1.change))} this month` : '' });
+    this.kpi(kpis, 'Taxable investments', money(iv.taxable), { icon: 'trending-up', help: 'invTaxable', sub: iv.total ? `${f.pct(iv.taxable / iv.total)} of invested` : '' });
+    this.kpi(kpis, 'Retirement accounts', money(iv.retirement), { icon: 'sunset', help: 'invRetirement', sub: iv.total ? `${f.pct(iv.retirement / iv.total)} of invested` : '' });
+    const y1 = iv.y1;
+    this.kpi(kpis, y1 && !iv.y1Exact ? `Market growth since ${monthLabel(y1.from)}` : '12-month market growth', y1 ? sMoney(y1.growth) : '—', { icon: 'sparkles', help: 'marketGrowth',
+      delta: y1 && y1.ret != null ? y1.ret : null, deltaText: y1 && y1.ret != null ? `${f.pct(Math.abs(y1.ret), 1)} est. return` : '',
+      sub: y1 ? `${sMoney(y1.moneyIn)} put in · ${sMoney(y1.change)} total change` : 'Add past balances to see growth' });
+
+    const grid = body.createDiv({ cls: 'fd-grid' });
+
+    // Growth chart
+    const rangeRows = this.invRange === 'all' ? tl : tl.filter((r) => r.date > addMonths(now, -Number(this.invRange)) || r.date === addMonths(now, -Number(this.invRange)));
+    const rows = rangeRows;
+    const gc = this.card(grid, 'Investment & retirement growth', { span: 3, help: 'invHistory', sub: 'Month-end balances · hover for details', tools: (tl2) => {
+      const seg = tl2.createDiv({ cls: 'fd-seg' });
+      for (const [v, l] of INV_VIEWS) {
+        const b = seg.createEl('button', { text: l, cls: this.invView === v ? 'is-active' : '' });
+        b.addEventListener('click', () => { this.invView = v; this.render(); });
+      }
+      const seg2 = tl2.createDiv({ cls: 'fd-seg' });
+      for (const [v, l] of INV_RANGES) {
+        const b = seg2.createEl('button', { text: l, cls: this.invRange === v ? 'is-active' : '' });
+        b.addEventListener('click', () => { this.invRange = v; this.render(); });
+      }
+      if (!this.embedded) this.iconButton(tl2, 'pencil', 'Edit monthly history', () => this.plugin.manageInvHistory());
+    } });
+    const idxOf = (r) => tl.indexOf(r);
+    const growthRows = (i, key, label) => {
+      const ti = idxOf(rows[i]);
+      let pi = -1;
+      for (let k = ti - 1; k >= 0; k--) if (invValue(tl[k], key) != null) { pi = k; break; }
+      const g = invGrowth(d, tl, pi, ti, key);
+      if (!g) return [];
+      const out = [{ label: `${label || 'Change'} vs ${monthLabel(g.from)}`, value: sMoney(g.change), tone: g.change >= 0 ? 'good' : 'bad' }];
+      if (g.moneyIn) out.push({ label: 'Money put in (est.)', value: sMoney(g.moneyIn), muted: true });
+      out.push({ label: 'Market growth', value: `${sMoney(g.growth)}${g.ret != null ? ` (${retLabel(g, f)})` : ''}`, tone: g.growth >= 0 ? 'good' : 'bad', muted: true });
+      return out;
+    };
+    const markers = rows.map((x, i) => (notesFor(d, x.date, f).length ? i : -1)).filter((i) => i >= 0);
+    const common = { labels: rows.map((r) => monthLabel(r.date)), height: 260, fmt: (v) => f.compact(v), tipFmt: money,
+      tipTitle: (i) => monthLabel(rows[i].date, true) + (rows[i].detailed ? '' : ' · snapshot total only'), markers, tipFoot: (i) => this.noteFoot(rows[i].date),
+      onPick: this.embedded ? null : (i) => (rows[i].date === now ? this.plugin.updateBalances() : this.plugin.editPastBalances(rows[i].date)),
+      emptyText: 'Balances appear here each month — add earlier months with “Past balances”' };
+    if (this.invView === 'group') {
+      lineChart(gc, Object.assign(common, {
+        series: [
+          { name: 'Total', color: INV_COLORS.total, values: rows.map((r) => r.total), dashed: true, noDots: true },
+          { name: 'Taxable', color: INV_COLORS.investment, values: rows.map((r) => r.taxable) },
+          { name: 'Retirement', color: INV_COLORS.retirement, values: rows.map((r) => r.retirement) },
+        ],
+        tipExtra: (i) => [...growthRows(i, 'taxable', 'Taxable'), ...growthRows(i, 'retirement', 'Retirement')],
+      }));
+    } else if (this.invView === 'account') {
+      const ids = new Set();
+      for (const r of rows) for (const id in r.byAcct) ids.add(id);
+      const latest = (id) => { for (let k = rows.length - 1; k >= 0; k--) if (rows[k].byAcct[id] != null) return rows[k].byAcct[id]; return 0; };
+      const list = [...ids].map((id) => invAccountInfo(d, id)).filter(Boolean).sort((a, b) => latest(b.id) - latest(a.id));
+      const top = list.slice(0, 8), rest = list.slice(8);
+      const series = top.map((a, k) => ({ name: a.name + (a.open ? '' : ' (closed)'), color: PALETTE[k % PALETTE.length], values: rows.map((r) => (r.byAcct[a.id] != null ? r.byAcct[a.id] : null)), noDots: rows.length > 24 }));
+      if (rest.length) series.push({ name: `${rest.length} other account${rest.length === 1 ? '' : 's'}`, color: PALETTE[9], dashed: true, values: rows.map((r) => (r.detailed ? sum(rest, (a) => r.byAcct[a.id] || 0) : null)) });
+      lineChart(gc, Object.assign(common, { series,
+        emptyText: 'Per-account lines need monthly account history — add it with “Past balances”',
+        tipExtra: (i) => {
+          const r = rows[i];
+          if (!r.detailed) return [{ label: 'Retirement total', value: money(r.retirement), muted: true }];
+          return [{ label: 'Total', value: money(r.total), strong: true }];
+        } }));
+    } else {
+      lineChart(gc, Object.assign(common, {
+        series: [{ name: 'Total invested', color: INV_COLORS.total, values: rows.map((r) => (r.total != null ? r.total : null)), area: true },
+          { name: 'Retirement only (older snapshots)', color: INV_COLORS.retirement, dashed: true, values: rows.map((r) => (r.detailed ? null : r.retirement)) }],
+        tipExtra: (i) => {
+          const r = rows[i];
+          const out = [];
+          if (r.detailed) {
+            out.push({ label: 'Taxable', value: money(r.taxable), color: INV_COLORS.investment, muted: true });
+            out.push({ label: 'Retirement', value: money(r.retirement), color: INV_COLORS.retirement, muted: true });
+          }
+          return out.concat(growthRows(i, 'total'));
+        } }));
+      if (rows.some((r) => !r.detailed)) gc.createDiv({ cls: 'fd-chart-hint', text: `${rows.filter((r) => !r.detailed).length} earlier month${rows.filter((r) => !r.detailed).length === 1 ? '' : 's'} only have the retirement total from your net-worth snapshots (dashed). Add each account’s balance with “Past balances” to include them in the total.` });
+    }
+    if (markers.length) gc.createDiv({ cls: 'fd-chart-hint', text: 'Dots on the axis mark months with notes. Click a month to edit its balances.' });
+
+    // Balance vs money put in
+    const detailedIdx = rows.map((r) => idxOf(r)).filter((i) => tl[i].detailed);
+    const bc = this.card(grid, 'Balance vs money put in', { span: 2, help: 'balanceVsIn', sub: 'The gap is market growth' });
+    if (detailedIdx.length >= 2) {
+      const a0 = detailedIdx[0];
+      const labels = [], bal = [], inn = [], gs = [];
+      for (const i of detailedIdx) {
+        const g = i === a0 ? { start: tl[a0].total, end: tl[a0].total, moneyIn: 0, growth: 0, change: 0, ret: 0, from: tl[a0].date } : invGrowth(d, tl, a0, i);
+        labels.push(monthLabel(tl[i].date)); bal.push(tl[i].total); inn.push(g.start + g.moneyIn); gs.push(g);
+      }
+      lineChart(bc, { labels, height: 220, fmt: (v) => f.compact(v), tipFmt: money,
+        series: [{ name: 'Balance', color: INV_COLORS.total, values: bal, area: true }, { name: 'Start + money put in', color: INV_COLORS.moneyIn, values: inn, dashed: true, noDots: true }],
+        tipTitle: (k) => `${monthLabel(tl[detailedIdx[k]].date, true)} · since ${monthLabel(tl[a0].date)}`,
+        tipExtra: (k) => {
+          const g = gs[k];
+          return [{ label: 'Market growth', value: sMoney(g.growth), tone: g.growth >= 0 ? 'good' : 'bad' },
+            { label: 'Estimated return', value: retLabel(g, f), muted: true },
+            ...(g.flows ? [{ label: 'Accounts opened / closed', value: sMoney(g.flows), muted: true }] : [])];
+        } });
+    } else emptyState(bc, 'Needs two or more months of account history');
+
+    // Tax treatment mix
+    const mc = this.card(grid, 'Tax treatment', { help: 'taxMix', sub: 'Hover a slice for how it’s taxed' });
+    const cats = {};
+    for (const a of iv.accts) { const c = taxCategoryOf(a); (cats[c] = cats[c] || []).push(a); }
+    const catColor = { taxable: PALETTE[0], crypto: PALETTE[6], deferred: PALETTE[2], roth: PALETTE[5], hsa: PALETTE[4], pension: PALETTE[7], bank: PALETTE[11] };
+    const ti = taxInfo();
+    donutChart(mc, Object.keys(cats).map((c) => ({ label: (ti[c] || { title: c }).title, value: sum(cats[c], (a) => a.balance), color: catColor[c] || PALETTE[9],
+      extra: [{ label: 'Accounts', value: cats[c].map((a) => a.name).join(', '), muted: true }, { label: 'Taxed', value: (ti[c] || {}).short || '—', muted: true }] })),
+    { fmt: money, sub: 'invested', center: f.compact(iv.total), emptyText: 'No investment accounts' });
+
+    // Where the change came from
+    const fc = this.card(grid, 'Where the change came from', { span: 3, help: 'growthSources', sub: iv.est ? 'Each month: money put in (estimated) + market growth' : 'Contribution estimate is off — all change shows as market growth' });
+    const flows = [];
+    for (let k = 1; k < detailedIdx.length; k++) {
+      const g = invGrowth(d, tl, detailedIdx[k - 1], detailedIdx[k]);
+      if (!g) continue;
+      const lab = monthLabel(g.to);
+      flows.push({ label: lab, contrib: g.moneyIn, growth: g.growth, tip: { key: `flow${k}`, title: g.months > 1 ? `${monthLabel(g.from, true)} → ${monthLabel(g.to, true)}` : monthLabel(g.to, true), rows: [
+        { label: 'Money put in (est.)', value: sMoney(g.moneyIn), color: INV_COLORS.contrib },
+        { label: 'Market growth', value: sMoney(g.growth), color: g.growth >= 0 ? INV_COLORS.growthUp : INV_COLORS.growthDown, tone: g.growth >= 0 ? 'good' : 'bad' },
+        { label: 'Total change', value: sMoney(g.change), strong: true },
+        { label: 'Estimated return', value: retLabel(g, f), muted: true },
+        { label: 'Balance', value: `${money(g.start)} → ${money(g.end)}`, muted: true },
+      ], foot: this.noteFoot(g.to) } });
+    }
+    flowChart(fc, flows, { fmt: (v) => f.compact(v), emptyText: 'Needs two or more months of account history' });
+
+    // Per-account performance
+    const pc = this.card(grid, 'Account performance', { span: 3, help: 'invPerAccount', sub: 'Hover a type for how it’s taxed, or a trend line for details', tools: (tl2) => {
+      if (this.embedded) return;
+      this.button(tl2, 'refresh-cw', 'Update balances', () => this.plugin.updateBalances());
+      this.button(tl2, 'plus', 'Add account', () => this.plugin.editAccount({ group: 'investment' }, true));
+    } });
+    const last = tl.length - 1;
+    const yearFrom = addMonths(now, -12);
+    const spark = tl.filter((r) => r.date >= yearFrom);
+    this.accountsTable(pc, iv.accts, { totalCol: 3, cols: ['Account', 'Type', 'Trend (12 mo)', 'Balance', '1-month', '12-month', 'Est. return'], extra: (tr, a) => {
+      const g1 = (() => { let p = -1; for (let k = last - 1; k >= 0; k--) if (tl[k].byAcct[a.id] != null) { p = k; break; } return tl[last] && tl[last].date === now ? invGrowth(d, tl, p, last, a.id) : null; })();
+      const gy = tl[last] && tl[last].date === now ? invGrowth(d, tl, invIndexFrom(tl, yearFrom, a.id, now), last, a.id) : null;
+      const sp = tr.createEl('td', { cls: 'fd-spark-cell' });
+      sparkline(sp, spark.map((r) => (r.byAcct[a.id] != null ? r.byAcct[a.id] : null)), { tip: () => ({ key: `sp:${a.id}`, title: a.name, rows: [
+        ...spark.filter((r) => r.byAcct[a.id] != null).slice(-6).map((r) => ({ label: monthLabel(r.date, true), value: money(r.byAcct[a.id]), muted: r.date !== now })),
+        ...(gy ? [{ label: `Change since ${monthLabel(gy.from)}`, value: sMoney(gy.change), tone: gy.change >= 0 ? 'good' : 'bad' },
+          { label: 'Money put in (est.)', value: sMoney(gy.moneyIn), muted: true }, { label: 'Market growth', value: sMoney(gy.growth), muted: true }] : []),
+      ] }) });
+      tr.createEl('td', { cls: 'is-num', text: money(num(a.balance)) });
+      const cell = (g) => {
+        const td = tr.createEl('td', { cls: 'is-num' });
+        if (!g) { td.setText('—'); td.addClass('fd-muted'); return; }
+        td.createDiv({ cls: g.change >= 0 ? 'fd-good' : 'fd-bad', text: sMoney(g.change) });
+        if (g.start) td.createDiv({ cls: 'fd-muted fd-small', text: signed(g.change / g.start, (v) => f.pct(v, 1)) });
+        hover(td, () => ({ key: `c:${a.id}:${g.from}`, title: `${a.name} · since ${monthLabel(g.from, true)}`, rows: [
+          { label: 'Start', value: money(g.start), muted: true }, { label: 'Now', value: money(g.end) },
+          { label: 'Money put in (est.)', value: sMoney(g.moneyIn), muted: true },
+          { label: 'Market growth', value: sMoney(g.growth), tone: g.growth >= 0 ? 'good' : 'bad' },
+          { label: 'Estimated return', value: retLabel(g, f), muted: true }] }));
+      };
+      cell(g1);
+      cell(gy);
+      const rt = tr.createEl('td', { cls: 'is-num' });
+      if (gy && gy.ret != null) {
+        rt.createSpan({ cls: 'fd-term ' + (gy.ret >= 0 ? 'fd-good' : 'fd-bad'), text: retLabel(gy, f) });
+        hover(rt, () => ({ key: `r:${a.id}`, title: 'Estimated return', wide: true, body: [`${gy.months}-month return after taking out this account’s estimated contributions (${money(num(a.contribution))}/yr).`],
+          calcLabel: 'Modified Dietz', calc: `${money(gy.growth)} ÷ (${money(gy.start)} + ½ × ${money(gy.moneyIn)}) = ${f.pct(gy.ret, 1)}` }));
+      } else { rt.setText('—'); rt.addClass('fd-muted'); }
+    } });
   }
 
   /* ----------------------------------------------------------- spending */
@@ -4077,10 +4675,20 @@ class Dashboard {
       nn.append(`: ${f.money(plan.requiredContribution)}/yr (+${f.money(plan.requiredContribution - plan.contribution)}).`);
     }
 
-    const hist = d.history.filter((h) => h.retirement != null);
-    const hc = this.card(grid, 'Retirement balance history', { span: 3, sub: 'From monthly snapshots' });
+    const hist = invTimeline(d).filter((h) => h.retirement != null);
+    const hc = this.card(grid, 'Retirement balance history', { span: 3, sub: 'Monthly account history', tools: (tl) => {
+      if (this.embedded) return;
+      this.button(tl, 'calendar-plus', 'Past balances', () => this.plugin.editPastBalances());
+      if (invTabShown(d)) { const a = tl.createEl('a', { cls: 'fd-link', text: 'Growth details →', attr: { href: '#' } }); a.addEventListener('click', (e) => { e.preventDefault(); this.invView = 'group'; this.setTab('investments'); }); }
+    } });
     lineChart(hc, { labels: hist.map((h) => monthLabel(h.date)), height: 200, series: [{ name: 'Retirement savings', color: PALETTE[2], values: hist.map((h) => h.retirement), area: true }],
-      fmt: (v) => f.compact(v), tipFmt: (v) => f.money(v), emptyText: 'History builds as you update balances' });
+      fmt: (v) => f.compact(v), tipFmt: (v) => f.money(v), tipTitle: (i) => monthLabel(hist[i].date, true),
+      tipExtra: (i) => {
+        const rows = [];
+        if (i > 0) { const dv = hist[i].retirement - hist[i - 1].retirement; rows.push({ label: `Change vs ${monthLabel(hist[i - 1].date)}`, value: signed(dv, (v) => f.money(v)), tone: dv >= 0 ? 'good' : 'bad', muted: true }); }
+        if (hist[i].detailed) for (const id in hist[i].byAcct) { const info = invAccountInfo(d, id); if (info && info.group === 'retirement') rows.push({ label: info.name, value: f.money(hist[i].byAcct[id]), muted: true }); }
+        return rows;
+      }, emptyText: 'History builds as you update balances' });
 
     this.renderRetirementNotes(grid);
 
@@ -4233,6 +4841,10 @@ module.exports = class FinanceDashboardPlugin extends Plugin {
     this.addCommand({ id: 'what-if', name: 'Retirement: What-if planner', callback: () => this.openWhatIf() });
     this.addCommand({ id: 'retirement-info', name: 'Retirement: How the projection is calculated', callback: () => this.openRetirementInfo() });
     this.addCommand({ id: 'networth-info', name: 'Net worth: How it’s calculated and how accounts are taxed', callback: () => this.openNetWorthInfo() });
+    this.addCommand({ id: 'past-balances', name: 'Investments: Add past balances', callback: () => this.editPastBalances() });
+    this.addCommand({ id: 'investment-history', name: 'Investments: Monthly history', callback: () => this.manageInvHistory() });
+    this.addCommand({ id: 'investments-info', name: 'Investments: How growth is calculated', callback: () => this.openInvestmentsInfo() });
+    this.addCommand({ id: 'toggle-investments-tab', name: 'Show or hide the Investments tab', callback: () => this.setInvTabShown(!invTabShown(this.data)) });
     this.addCommand({ id: 'refresh-tax-rules', name: 'Refresh tax rules from IRS.gov', callback: () => this.refreshTaxRules() });
     this.addCommand({ id: 'add-goal', name: 'Add savings goal', callback: () => this.editGoal() });
     this.addCommand({ id: 'import-csv', name: 'Import transactions from CSV', callback: () => new ImportModal(this.app, this).open() });
@@ -4287,6 +4899,16 @@ module.exports = class FinanceDashboardPlugin extends Plugin {
     this.data = Object.assign(base, saved);
     this.data.settings = Object.assign(defaultData().settings, saved.settings || {});
     this.data.settings.link = Object.assign(defaultData().settings.link, (saved.settings && saved.settings.link) || {});
+    this.data.settings.invest = Object.assign(defaultData().settings.invest, (saved.settings && saved.settings.invest) || {});
+    if (!this.data.invHistory || typeof this.data.invHistory !== 'object' || Array.isArray(this.data.invHistory)) this.data.invHistory = {};
+    if (!this.data.invMeta || typeof this.data.invMeta !== 'object') this.data.invMeta = {};
+    // Start per-account history from this month for vaults upgraded from older versions.
+    const nowKey = monthKey(new Date()), invAccts = this.data.accounts.filter(isInvAccount);
+    if (invAccts.length && !this.data.invHistory[nowKey]) {
+      const m = {};
+      for (const a of invAccts) { m[a.id] = Math.round(num(a.balance) * 100) / 100; this.data.invMeta[a.id] = { name: a.name, group: a.group, kind: a.kind || '' }; }
+      this.data.invHistory[nowKey] = m;
+    }
     this.data.retirement = Object.assign(defaultData().retirement, saved.retirement || {});
     if (!Array.isArray(this.data.incomeHistory)) this.data.incomeHistory = [];
     if (!Array.isArray(this.data.balanceNotes)) this.data.balanceNotes = [];
@@ -4350,7 +4972,7 @@ module.exports = class FinanceDashboardPlugin extends Plugin {
 
   /**
    * Render a dashboard link. Options (block: one per line; inline: key=value separated by ; or |), all optional:
-   * label, tab (overview|networth|spending|retirement), icon (Lucide name), image (vault path, [[wikilink]] or URL),
+   * label, tab (overview|networth|investments|spending|retirement), icon (Lucide name), image (vault path, [[wikilink]] or URL),
    * style (card|button|icon), size (tiny|small|medium|large|xl|xxl, a multiplier like 1.5, a percent like 150%, or px like 22px),
    * subtitle, and for blocks: align (left|center|right), float (left|right), width (auto|full).
    */
@@ -4466,6 +5088,122 @@ module.exports = class FinanceDashboardPlugin extends Plugin {
 
   openWhatIf(opts) { new WhatIfModal(this.app, this, opts).open(); }
   openNetWorthInfo() { new NetWorthInfoModal(this.app, this).open(); }
+  openInvestmentsInfo() { new InvestmentsInfoModal(this.app, this).open(); }
+
+  /** Show or hide the Investments tab (history keeps being saved either way). */
+  async setInvTabShown(on) {
+    this.data.settings.invest.showTab = !!on;
+    await this.save();
+    this.refresh();
+  }
+
+  /**
+   * Enter or correct investment & retirement balances for a past month. Changing the month reloads that
+   * month's saved balances. Optionally keeps that month's net-worth snapshot in step.
+   */
+  editPastBalances(month) {
+    const d = this.data;
+    const now = monthKey(new Date());
+    const accts = d.accounts.filter(isInvAccount);
+    if (!accts.length) { new Notice('Add an investment or retirement account first.'); return this.editAccount({ group: 'investment' }, true); }
+    const start = month && month < now ? month : addMonths(now, -1);
+    const valuesFor = (m) => { const row = (d.invHistory || {})[m] || {}; const o = {}; for (const a of accts) o[a.id] = row[a.id] != null ? row[a.id] : ''; return o; };
+    const statusFor = (m) => {
+      if (!/^\d{4}-\d{2}$/.test(m || '')) return 'Pick a month.';
+      if (m >= now) return 'This month comes from your current balances — use “Update balances” instead.';
+      const has = (d.invHistory || {})[m];
+      const snap = d.history.find((h) => h.date === m);
+      return (has ? 'Editing saved balances for this month.' : 'No balances saved for this month yet.') + (snap ? '' : ' There’s no net-worth snapshot for this month.');
+    };
+    const fields = [{ key: 'date', label: 'Month', type: 'month', required: true, descFor: (v) => statusFor(v.date) }];
+    for (const g of ['investment', 'retirement']) {
+      const list = accts.filter((a) => a.group === g);
+      if (!list.length) continue;
+      fields.push({ type: 'heading', label: ACCOUNT_GROUPS[g] });
+      for (const a of list) fields.push({ key: a.id, label: a.name + (a.kind && !a.name.toLowerCase().includes(a.kind.toLowerCase()) ? ` (${a.kind})` : ''), type: 'number', optional: true, half: true, placeholder: 'Blank = didn’t have it' });
+    }
+    fields.push({ type: 'heading', label: 'Net-worth snapshot' });
+    fields.push({ key: '__adjust', label: 'Also update that month’s net-worth snapshot', type: 'checkbox', default: true,
+      descFor: (v) => (d.history.find((h) => h.date === v.date) ? 'Adds the difference to that month’s assets and net worth, and sets its retirement total, so the Net Worth and Retirement charts match.' : 'No snapshot for this month — add one from Net Worth → pencil if you want it on the net-worth trend.') });
+    const existing = month && (d.invHistory || {})[month];
+    new FormModal(this.app, {
+      title: 'Past investment & retirement balances',
+      intro: 'Enter each account’s balance at the end of a past month, e.g. from old statements. Leave an account blank if you didn’t have it yet.',
+      fields, values: Object.assign({ date: start, __adjust: true }, valuesFor(start)),
+      helpCtx: () => ({ iv: invStats(d), f: new Fmt(d.settings) }),
+      onChange: (key, v, set) => { if (key === 'date' && /^\d{4}-\d{2}$/.test(v.date)) { const o = valuesFor(v.date); for (const id in o) set(id, o[id]); } },
+      submitText: 'Save month',
+      onDelete: existing ? async () => {
+        await this.mutate((dd) => { delete dd.invHistory[month]; });
+        new Notice(`Removed account balances for ${monthLabel(month, true)}.`);
+      } : null,
+      onSubmit: async (v) => {
+        const m = v.date;
+        if (!/^\d{4}-\d{2}$/.test(m)) throw new Error('Month must look like 2026-05.');
+        if (m >= now) throw new Error('Pick a past month — this month comes from your current balances (Update balances).');
+        const entered = accts.filter((a) => v[a.id] != null);
+        await this.mutate((dd) => {
+          const prior = dd.invHistory[m] ? { ...dd.invHistory[m] } : null;
+          const next = {};
+          // Keep balances of accounts that have since been deleted (they aren't in the form).
+          if (prior) for (const id in prior) if (!accts.some((a) => a.id === id)) next[id] = prior[id];
+          for (const a of entered) next[a.id] = Math.round(Math.abs(num(v[a.id])) * 100) / 100;
+          for (const a of accts) dd.invMeta[a.id] = { name: a.name, group: a.group, kind: a.kind || '' };
+          const groupSum = (map, g) => { let t = 0; for (const id in map || {}) { const i = invAccountInfo(dd, id); if (i && (i.group === 'retirement') === (g === 'retirement')) t += num(map[id]); } return t; };
+          const snap = dd.history.find((h) => h.date === m);
+          if (snap && v.__adjust) {
+            const newRet = groupSum(next, 'retirement'), newTax = groupSum(next, 'investment');
+            const oldRet = prior ? groupSum(prior, 'retirement') : num(snap.retirement);
+            const delta = (newRet - oldRet) + (prior ? newTax - groupSum(prior, 'investment') : 0);
+            snap.assets = Math.round(num(snap.assets) + delta);
+            snap.net = Math.round(num(snap.net) + delta);
+            snap.retirement = Math.round(newRet);
+          }
+          if (Object.keys(next).length) dd.invHistory[m] = next; else delete dd.invHistory[m];
+        });
+        new Notice(entered.length ? `Saved ${entered.length} balance${entered.length === 1 ? '' : 's'} for ${monthLabel(m, true)}.` : `Cleared ${monthLabel(m, true)}.`);
+      },
+    }).open();
+  }
+
+  /** List of months with investment & retirement history; click one to edit it. */
+  manageInvHistory() {
+    const plugin = this;
+    new (class extends Modal {
+      onOpen() {
+        this.titleEl.setText('Investment & retirement history');
+        this.modalEl.addClass('fd-modal');
+        this.render = () => {
+          const c = this.contentEl;
+          c.empty();
+          const d = plugin.data, f = new Fmt(d.settings), now = monthKey(new Date());
+          c.createEl('p', { cls: 'fd-modal-intro', text: 'This month updates automatically from your current balances. Add or fix earlier months to fill in your growth charts.' });
+          const b = c.createDiv({ cls: 'fd-row-buttons' });
+          b.createEl('button', { cls: 'mod-cta', text: 'Add past month' }).addEventListener('click', () => { this.close(); plugin.editPastBalances(); });
+          const tl = invTimeline(d);
+          if (!tl.length) { emptyState(c, 'No history yet.'); return; }
+          const t = c.createEl('table', { cls: 'fd-table' });
+          const hr = t.createEl('thead').createEl('tr');
+          ['Month', 'Taxable', 'Retirement', 'Total', 'Accounts'].forEach((h, i) => hr.createEl('th', { text: h, cls: i ? 'is-num' : '' }));
+          const tb = t.createEl('tbody');
+          for (const r of [...tl].reverse()) {
+            const live = r.date === now;
+            const tr = tb.createEl('tr', { cls: live ? '' : 'is-clickable' });
+            const td = tr.createEl('td', { text: monthLabel(r.date, true) });
+            if (live) td.createSpan({ cls: 'fd-badge is-neutral fd-inline-badge', text: 'live' });
+            tr.createEl('td', { cls: 'is-num', text: r.taxable != null ? f.money(r.taxable) : '—' });
+            tr.createEl('td', { cls: 'is-num', text: f.money(r.retirement) });
+            tr.createEl('td', { cls: 'is-num', text: r.total != null ? f.money(r.total) : '—' });
+            tr.createEl('td', { cls: 'is-num fd-muted', text: r.detailed ? String(Object.keys(r.byAcct).length) : 'Snapshot total only' });
+            if (!live) tr.addEventListener('click', () => { this.close(); plugin.editPastBalances(r.date); });
+          }
+        };
+        this.render();
+      }
+      onClose() { this.contentEl.empty(); }
+    })(this.app).open();
+  }
+
 
   /** Check IRS.gov for updated tax values, then show what changed and how it affects the dashboard. */
   async refreshTaxRules() {
@@ -4926,6 +5664,23 @@ class FinanceSettingTab extends PluginSettingTab {
       .addButton((b) => b.setButtonText('Reset').onClick(async () => { p.data.taxRules = null; applyTaxRules(p.data); await p.save(); p.refresh(); this.display(); new Notice('Tax rules reset.'); }));
   }
 
+  displayInvestSettings(containerEl) {
+    const p = this.plugin, st = p.data.settings.invest;
+    const save = async () => { await p.save(); p.refresh(); };
+    new Setting(containerEl).setName('Investments').setHeading();
+    new Setting(containerEl).setName('Show Investments tab').setDesc('Growth charts for investment & retirement accounts. Monthly history is still saved while hidden. Also in the dashboard’s gear menu.')
+      .addToggle((t) => t.setValue(invTabShown(p.data)).onChange(async (v) => { st.showTab = v; await save(); }));
+    new Setting(containerEl).setName('Default range').setDesc('Range the growth chart opens with.')
+      .addDropdown((dd) => { for (const [v, l] of INV_RANGES) dd.addOption(v, l === 'All' ? 'All history' : l.replace('M', ' months').replace('1Y', '1 year').replace('3Y', '3 years')); dd.setValue(st.range || '12').onChange(async (v) => { st.range = v; await save(); }); });
+    new Setting(containerEl).setName('Default view').setDesc('Show the total, taxable vs retirement, or each account.')
+      .addDropdown((dd) => { for (const [v, l] of INV_VIEWS) dd.addOption(v, l); dd.setValue(st.view || 'total').onChange(async (v) => { st.view = v; await save(); }); });
+    new Setting(containerEl).setName('Estimate contributions').setDesc('Uses each account’s yearly contribution to split monthly changes into money put in and market growth. Turn off to count all change as growth.')
+      .addToggle((t) => t.setValue(st.estimateContrib !== false).onChange(async (v) => { st.estimateContrib = v; await save(); }));
+    new Setting(containerEl).setName('Past balances').setDesc('Enter investment & retirement balances for earlier months.')
+      .addButton((b) => b.setButtonText('Add past balances').onClick(() => p.editPastBalances()))
+      .addButton((b) => b.setButtonText('Monthly history').onClick(() => p.manageInvHistory()));
+  }
+
   displayLinkSettings(containerEl) {
     const p = this.plugin;
     const L = p.data.settings.link;
@@ -5014,6 +5769,7 @@ class FinanceSettingTab extends PluginSettingTab {
     });
     new Setting(containerEl).addButton((b) => b.setButtonText('Add category').onClick(async () => { p.data.categories.push({ name: 'New category', budget: 0 }); await p.save(); this.display(); }));
 
+    this.displayInvestSettings(containerEl);
     this.displayLinkSettings(containerEl);
     this.displayTaxSettings(containerEl);
 
@@ -5049,21 +5805,45 @@ function sampleData() {
   d.accounts = [
     A('Everyday checking', 'budget', 'Checking', 6240), A('High-yield savings', 'budget', 'High-yield savings', 18400),
     A('Emergency fund', 'budget', 'Savings', 12000), A('Cash on hand', 'budget', 'Cash', 300),
-    A('Index fund brokerage', 'investment', 'Brokerage', 42800), A('Individual stocks', 'investment', 'Stocks', 9600), A('Crypto wallet', 'investment', 'Crypto', 3200),
+    A('Index fund brokerage', 'investment', 'TOD Individual', 42800, 3600), A('Individual stocks', 'investment', 'Stocks', 9600), A('Crypto wallet', 'investment', 'Crypto', 3200),
     A('Employer 401(k)', 'retirement', '401(k)', 96400, 14500), A('Roth IRA', 'retirement', 'Roth IRA', 38200, 7000),
-    A('Health savings (HSA)', 'retirement', 'HSA', 11800, 4150), A('Rollover IRA', 'retirement', 'Traditional IRA', 22600, 0),
+    A('Health savings (HSA)', 'retirement', 'HSA', 11800, 4150), A('Rollover IRA', 'retirement', 'Rollover IRA', 22600, 0),
     A('Home', 'property', 'Home', 410000), A('Car', 'property', 'Vehicle', 18500),
     A('Mortgage', 'debt', 'Mortgage', 298000), A('Auto loan', 'debt', 'Auto loan', 9800),
     A('Visa Signature', 'debt', 'Credit card', 1840), A('Rewards Mastercard', 'debt', 'Credit card', 960),
   ];
   const t = totals(d);
   const now = monthKey(new Date());
+  // Per-account investment history: walk back from today's balances, taking out each month's contribution
+  // and a market return (shared market move + a little per-account noise, with a dip about 7 months ago).
+  const market = [];
+  for (let i = 0; i <= 23; i++) market[i] = i === 7 ? -0.046 : i === 6 ? -0.012 : 0.0095 + (rnd() - 0.5) * 0.03;
+  const inv = d.accounts.filter(isInvAccount);
+  const bal = {};
+  for (const a of inv) bal[a.id] = [num(a.balance)];
+  for (const a of inv) {
+    const vol = a.kind === 'Crypto' ? 3.2 : a.kind === 'Stocks' ? 1.5 : a.kind === 'HSA' ? 0.8 : 1;
+    let b = num(a.balance);
+    for (let i = 0; i < 23; i++) {
+      const r = market[i] * vol + (rnd() - 0.5) * 0.008;
+      b = Math.max(0, (b - num(a.contribution) / 12) / (1 + r));
+      bal[a.id].push(Math.round(b * 100) / 100);
+    }
+  }
+  // The rollover IRA was opened 14 months ago from a previous employer's 401(k).
+  const roll = inv.find((a) => a.kind === 'Rollover IRA');
+  const otherInv = sum(inv, (a) => (a.kind === 'Rollover IRA' ? 0 : a.balance));
+  const nonInv = t.assets - otherInv - (roll ? num(roll.balance) : 0);
   for (let i = 23; i >= 1; i--) {
     const k = addMonths(now, -i);
-    const g = 1 - i * 0.0105 + (rnd() - 0.5) * 0.02;
-    const assets = Math.round(t.assets * (1 - i * 0.0062 + (rnd() - 0.5) * 0.008));
+    const m = {};
+    for (const a of inv) if (!(a === roll && i > 14)) m[a.id] = bal[a.id][i];
+    d.invHistory[k] = m;
+    const invSum = sum(Object.values(m));
+    const ret = sum(inv.filter((a) => a.group === 'retirement' && m[a.id] != null), (a) => m[a.id]);
+    const assets = Math.round(nonInv * (1 - i * 0.0035 + (rnd() - 0.5) * 0.006) + invSum + (roll && i > 14 ? bal[roll.id][i] : 0));
     const debts = Math.round(t.debts * (1 + i * 0.0045));
-    d.history.push({ date: k, assets, debts, net: assets - debts, retirement: Math.round(t.byGroup.retirement * g * (1 - i * 0.004)) });
+    d.history.push({ date: k, assets, debts, net: assets - debts, retirement: Math.round(ret + (roll && i > 14 ? bal[roll.id][i] : 0)) });
   }
   upsertSnapshot(d);
   let score = 704;

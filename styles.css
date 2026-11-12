@@ -628,3 +628,33 @@ line.fd-gridline { stroke: var(--fd-border); stroke-width: 1; }
 .fd-wi-warn-icon svg { width: 14px; height: 14px; }
 @media (max-width: 720px) { .fd-tax-grid { grid-template-columns: minmax(0, 1fr); } }
 .fd-badge.is-neutral { color: var(--text-muted); background: var(--background-modifier-hover); }
+
+/* ------------------------------------------------------------ investments (1.9) */
+line.fd-zeroline { stroke: var(--text-faint); stroke-width: 1; opacity: 0.6; }
+.fd-spark-cell { width: 104px; }
+.fd-spark { display: inline-flex; align-items: center; vertical-align: middle; }
+.fd-spark.has-tip { cursor: help; }
+.fd-spark svg { overflow: visible; }
+.fd-table td.is-num .fd-small { line-height: 1.2; }
+.fd-info-step { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px dashed var(--background-modifier-border); }
+.fd-info-step:last-child { border-bottom: none; }
+.fd-info-step-num { flex: 0 0 26px; height: 26px; border-radius: 50%; background: var(--interactive-accent); color: var(--text-on-accent); font-weight: 600; font-size: 0.85em; display: flex; align-items: center; justify-content: center; }
+.fd-info-step-body { flex: 1; min-width: 0; }
+.fd-info-step-title { font-weight: 600; margin-bottom: 2px; }
+.fd-info-step-text { font-size: 0.95em; line-height: 1.5; color: var(--text-muted); }
+.fd-info-formula { margin-top: 6px; padding: 6px 10px; border-radius: 6px; background: var(--background-secondary); font-family: var(--font-monospace); font-size: 0.85em; line-height: 1.45; overflow-wrap: anywhere; }
+.fd-manage-pages { margin-bottom: 10px; }
+.fd-manage-pages .fd-manage-group-head { position: static; }
+.fd-manage-toggle-row .fd-manage-title { display: flex; align-items: center; gap: 4px; }
+.fd-manage-toggle-row .fd-manage-kind { white-space: normal; max-width: 52ch; }
+.fd-manage-toggle-row .checkbox-container { margin-left: auto; flex: 0 0 auto; }
+.fd-inline-badge { margin-left: 8px; font-size: 0.72em; vertical-align: middle; }
+.fd-card-tools .fd-seg + .fd-seg { margin-left: 4px; }
+@media (max-width: 640px) {
+  .fd-spark-cell { width: 70px; }
+  .fd-card-tools { flex-wrap: wrap; }
+}
+@media (max-width: 640px) {
+  .fd-card-head { flex-wrap: wrap; row-gap: 6px; }
+  .fd-card-head .fd-card-tools { width: 100%; justify-content: flex-start; }
+}

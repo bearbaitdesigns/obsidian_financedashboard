@@ -20,12 +20,13 @@ BRAT checks this repository for new releases and can update the plugin for you.
 3. In Obsidian: **Settings → Community plugins** → turn off Restricted mode if needed → reload the list → enable **Finance Dashboard**.
 4. Click the wallet icon in the left ribbon (or run **Finance Dashboard: Open dashboard** from the command palette).
 
-## The four pages
+## The pages
 
 | Page | What it shows |
 |---|---|
 | **Overview** | Headline numbers from every page (net worth, credit score, month spending vs budget, retirement status), a 12-month net-worth chart, spending donut, savings-goal progress, retirement progress ring, an **Income** card with a **Net / Gross / Both** toggle, this month's **Notes**, and a "Things to look at" list (over-budget categories, goals behind pace, emergency-fund coverage, credit score moves). Click any card to jump to its page. |
 | **Net Worth** | Net worth, assets, debts and 12-month change; net-worth trend (6M / 1Y / 3Y / All) with assets and debts; pie charts for **Investments** and **On-budget accounts** plus overall asset mix; **credit score trend** with Poor→Exceptional bands; full accounts table. |
+| **Investments** *(can be hidden)* | Total invested, taxable vs retirement, this month's change and **12-month market growth with estimated return**; a growth chart for investment & retirement accounts (**Total / By group / By account**, 6M / 1Y / 3Y / All); **Balance vs money put in**; tax-treatment mix; **Where the change came from** (money put in vs market growth/loss each month); and an account performance table with 12-month trend lines, 1- and 12-month changes and estimated return. Plus **Past balances** and a **(?)** explainer. |
 | **Spending & Savings** | Month picker and All / Debit / Credit filter; spending by category (split by debit vs credit, with budget ticks); category share donut; six-month trend; **savings goals** with progress, monthly amount needed, and behind-pace flags; transaction list. |
 | **Retirement** | Retirement savings, target nest egg, **estimated retirement date/age**, and **on-track status**; your goals; projected growth vs target; allocation by account; tax-treatment mix (pre-tax / Roth / HSA); contributions by account (with the extra needed to hit your goal); balance history; **My retirement notes**; accounts table. Plus a **What if…** planner and a **(?)** explainer. |
 
@@ -155,11 +156,21 @@ Notes appear in the month they belong to:
 
 Click any note to edit it.
 
+## Investments: growth, past balances and estimated return
+
+- **Monthly account history.** Every time you update balances, each investment and retirement account's balance is saved for the month. Deleted accounts keep their history.
+- **Past balances.** Use **Past balances** on the Investments page (or the Retirement history card, Settings, or the command *Investments: Add past balances*). Pick a month and type each account's balance from old statements; leave an account blank if you didn't have it yet. Changing the month loads what's already saved. You can also update that month's net-worth snapshot so the Net Worth and Retirement charts match. **Monthly history** lists every month so you can edit or delete one. Clicking a month on the growth chart opens it too.
+- **Money put in vs market growth.** Money put in is estimated from each account's yearly contribution (÷ 12 per month), plus accounts that were opened or rolled in, minus accounts closed. Market growth is the rest: ending − starting − money put in. **Estimated return** uses the Modified Dietz method: growth ÷ (start + ½ × money put in). You can turn the contribution estimate off in Settings → Investments.
+- **Hover** any chart, KPI, trend line or change cell for the numbers behind it; underlined terms explain themselves; the **(?)** explainer shows each step with your numbers, notes on TOD and rollover accounts, and sources (Modified Dietz, Investor.gov, FINRA, IRS).
+- **Hide the tab** from the gear icon (**Dashboard pages → Investments tab**) or Settings → Investments if you don't want to track it. History keeps being saved, so nothing is lost if you turn it back on.
+- **Account types:** *TOD Individual* (investment) — an individual brokerage account with a transfer-on-death beneficiary, taxed like any brokerage account — and *Rollover IRA* (retirement) — a traditional IRA holding money rolled over from an employer plan, taxed when withdrawn.
+
 ## Managing accounts (gear icon)
 
 Click the **gear icon** at the top right of the dashboard (or **Manage** on the Net Worth page's Accounts card, or the command **Manage accounts & assets**) to open the account manager:
 
 - See account count, assets, debts and net worth at a glance; search by name or type and filter by group.
+- **Dashboard pages:** show or hide the **Investments** tab.
 - **Edit balances and yearly contributions inline** — changes save when you press Enter or leave the field (invalid entries are outlined in red, saved ones flash green).
 - **Edit** (pencil) to rename or change group/type; **Delete** (trash) with a confirmation. Past monthly snapshots are kept when you delete.
 - **Add account** at the top, or the **+** beside a group heading to add one already set to that group.
@@ -195,7 +206,7 @@ Optional lines (each one overrides the default from settings):
 | Option | Example | What it does |
 |---|---|---|
 | `label` | `label: My money` | Text on the link |
-| `tab` | `tab: spending` | Page to open: `overview`, `networth`, `spending` or `retirement` |
+| `tab` | `tab: spending` | Page to open: `overview`, `networth`, `investments`, `spending` or `retirement` |
 | `size` | `size: large` | `tiny`, `small`, `medium`, `large`, `xl`, `xxl`, a multiplier (`1.5`), a percent (`150%`) or pixels (`22px`). The whole link scales together |
 | `style` | `style: button` | `card` (picture, title, subtitle), `button` (compact pill) or `icon` (picture only) |
 | `align` | `align: center` | `left`, `center` or `right` on its line |
@@ -237,7 +248,7 @@ tab: overview
 ```
 ````
 
-`tab` can be `overview`, `networth`, `spending` or `retirement`.
+`tab` can be `overview`, `networth`, `investments`, `spending` or `retirement`.
 
 ## Commands
 
