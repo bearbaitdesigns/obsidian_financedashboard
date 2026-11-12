@@ -1,7 +1,7 @@
 {
   "id": "finance-dashboard",
   "name": "Finance Dashboard",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "minAppVersion": "1.4.0",
   "description": "Track net worth, credit score, spending, savings goals and retirement in a five-page dashboard, with investment and retirement growth tracking.",
   "author": "bearbaitdesigns",

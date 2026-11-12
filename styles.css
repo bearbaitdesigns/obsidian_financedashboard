@@ -266,7 +266,8 @@ line.fd-gridline { stroke: var(--fd-border); stroke-width: 1; }
 .fd-manage-stat.is-neg .fd-mini-value { color: var(--color-red); }
 .fd-manage-stat.is-strong .fd-mini-value { font-size: 1.05em; }
 .fd-manage-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
-.fd-manage-search { flex: 1 1 200px; min-width: 160px; }
+.fd-manage-search { flex: 1 1 160px; min-width: 120px; }
+.fd-manage-toolbar .dropdown { flex: 0 1 auto; min-width: 0; }
 .fd-manage-list { max-height: min(56vh, 520px); overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
 .fd-manage-group { margin-bottom: 12px; }
 .fd-manage-group-head { display: flex; align-items: center; gap: 8px; padding: 6px 2px; border-bottom: 1px solid var(--background-modifier-border); position: sticky; top: 0; background: var(--background-primary); z-index: 1; }
@@ -658,3 +659,8 @@ line.fd-zeroline { stroke: var(--text-faint); stroke-width: 1; opacity: 0.6; }
   .fd-card-head { flex-wrap: wrap; row-gap: 6px; }
   .fd-card-head .fd-card-tools { width: 100%; justify-content: flex-start; }
 }
+
+/* Donut with its legend underneath (Retirement: allocation & tax treatment) */
+.fd-donut-wrap.is-stacked { flex-direction: column; align-items: stretch; gap: 14px; }
+.fd-donut-wrap.is-stacked .fd-donut { width: 150px; }
+.fd-donut-wrap.is-stacked .fd-donut-legend { min-width: 0; width: 100%; }

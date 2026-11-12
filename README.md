@@ -26,7 +26,7 @@ BRAT checks this repository for new releases and can update the plugin for you.
 |---|---|
 | **Overview** | Headline numbers from every page (net worth, credit score, month spending vs budget, retirement status), a 12-month net-worth chart, spending donut, savings-goal progress, retirement progress ring, an **Income** card with a **Net / Gross / Both** toggle, this month's **Notes**, and a "Things to look at" list (over-budget categories, goals behind pace, emergency-fund coverage, credit score moves). Click any card to jump to its page. |
 | **Net Worth** | Net worth, assets, debts and 12-month change; net-worth trend (6M / 1Y / 3Y / All) with assets and debts; pie charts for **Investments** and **On-budget accounts** plus overall asset mix; **credit score trend** with Poor→Exceptional bands; full accounts table. |
-| **Investments** *(can be hidden)* | Total invested, taxable vs retirement, this month's change and **12-month market growth with estimated return**; a growth chart for investment & retirement accounts (**Total / By group / By account**, 6M / 1Y / 3Y / All); **Balance vs money put in**; tax-treatment mix; **Where the change came from** (money put in vs market growth/loss each month); and an account performance table with 12-month trend lines, 1- and 12-month changes and estimated return. Plus **Past balances** and a **(?)** explainer. |
+| **Investments** *(can be hidden)* | Total invested, taxable vs retirement, this month's change and **12-month market growth with estimated return**; a growth chart for investment & retirement accounts (**Total / By group / By account**, 6M / 1Y / 3Y / All); **Balance vs money put in**; tax-treatment mix; **Where the change came from** (money put in vs market growth/loss each month); and an account performance table with 12-month trend lines, 1- and 12-month changes and estimated return. Plus a **(?)** explainer; past months are entered from the gear icon. |
 | **Spending & Savings** | Month picker and All / Debit / Credit filter; spending by category (split by debit vs credit, with budget ticks); category share donut; six-month trend; **savings goals** with progress, monthly amount needed, and behind-pace flags; transaction list. |
 | **Retirement** | Retirement savings, target nest egg, **estimated retirement date/age**, and **on-track status**; your goals; projected growth vs target; allocation by account; tax-treatment mix (pre-tax / Roth / HSA); contributions by account (with the extra needed to hit your goal); balance history; **My retirement notes**; accounts table. Plus a **What if…** planner and a **(?)** explainer. |
 
@@ -156,10 +156,19 @@ Notes appear in the month they belong to:
 
 Click any note to edit it.
 
+## Past balances (gear icon)
+
+Open the **gear icon → Past balances** (also in the snapshots list, Settings → Investments, the Investments page's monthly history, or the command *Add past balances*). Pick a month and type each on-budget, investment and retirement account's balance from old statements. Leave an account blank if you didn't have it yet; changing the month loads what's already saved.
+
+- **The month already has a net-worth snapshot:** its assets and net worth change by the difference (untick *Update this month's net-worth snapshot* to only save the account balances). If the snapshot was saved as a single total without a cash breakdown, you choose whether that total already includes the cash you entered or should add it.
+- **No snapshot yet:** the month is added to the Net Worth trend from these balances plus total debts and property, prefilled from the closest month you have. Untick *Add this month to the net-worth trend* to skip that.
+- The Net Worth trend tooltip shows each month's on-budget total, the snapshots list has an On-budget column, and the Investments and Retirement charts use the investment and retirement balances. Each account's balance is also saved automatically every month from now on.
+- **Delete** removes the account balances for the month you opened; that month's net worth stays as it is.
+
 ## Investments: growth, past balances and estimated return
 
 - **Monthly account history.** Every time you update balances, each investment and retirement account's balance is saved for the month. Deleted accounts keep their history.
-- **Past balances.** Use **Past balances** on the Investments page (or the Retirement history card, Settings, or the command *Investments: Add past balances*). Pick a month and type each account's balance from old statements; leave an account blank if you didn't have it yet. Changing the month loads what's already saved. You can also update that month's net-worth snapshot so the Net Worth and Retirement charts match. **Monthly history** lists every month so you can edit or delete one. Clicking a month on the growth chart opens it too.
+- **Past balances.** Use **gear icon → Past balances** (see above). **Monthly history** (clock icon on the Investments page) lists every month so you can edit or delete one, and clicking a month on the growth chart opens it too.
 - **Money put in vs market growth.** Money put in is estimated from each account's yearly contribution (÷ 12 per month), plus accounts that were opened or rolled in, minus accounts closed. Market growth is the rest: ending − starting − money put in. **Estimated return** uses the Modified Dietz method: growth ÷ (start + ½ × money put in). You can turn the contribution estimate off in Settings → Investments.
 - **Hover** any chart, KPI, trend line or change cell for the numbers behind it; underlined terms explain themselves; the **(?)** explainer shows each step with your numbers, notes on TOD and rollover accounts, and sources (Modified Dietz, Investor.gov, FINRA, IRS).
 - **Hide the tab** from the gear icon (**Dashboard pages → Investments tab**) or Settings → Investments if you don't want to track it. History keeps being saved, so nothing is lost if you turn it back on.
@@ -171,6 +180,7 @@ Click the **gear icon** at the top right of the dashboard (or **Manage** on the 
 
 - See account count, assets, debts and net worth at a glance; search by name or type and filter by group.
 - **Dashboard pages:** show or hide the **Investments** tab.
+- **Past balances:** enter on-budget, investment and retirement balances for an earlier month.
 - **Edit balances and yearly contributions inline** — changes save when you press Enter or leave the field (invalid entries are outlined in red, saved ones flash green).
 - **Edit** (pencil) to rename or change group/type; **Delete** (trash) with a confirmation. Past monthly snapshots are kept when you delete.
 - **Add account** at the top, or the **+** beside a group heading to add one already set to that group.
