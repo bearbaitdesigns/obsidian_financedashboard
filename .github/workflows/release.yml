@@ -1,8 +1,11 @@
-# Publishes a GitHub release (used by BRAT and manual installs) whenever a version tag is pushed.
-# Tag must match the "version" in manifest.json, e.g. 1.8.0 (no "v" prefix).
+# Attaches the plugin files (used by BRAT and manual installs) to a GitHub release.
+# Runs when you publish a release on GitHub, or when a version tag is pushed.
+# The tag must match "version" in manifest.json, e.g. 1.8.0 (no "v" prefix).
 name: Release Obsidian plugin
 
 on:
+  release:
+    types: [published]
   push:
     tags:
       - "*"
@@ -25,11 +28,15 @@ jobs:
             exit 1
           fi
 
-      - name: Create release
+      - name: Create the release or attach files to it
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          gh release create "$tag" main.js manifest.json styles.css \
-            --title "$tag" \
-            --notes "Finance Dashboard $tag. Install with BRAT: Settings → BRAT → Add beta plugin → bearbaitdesigns/obsidian_financedashboard. Tax and retirement figures are estimates for planning, not financial or tax advice."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" main.js manifest.json styles.css --clobber
+          else
+            gh release create "$tag" main.js manifest.json styles.css \
+              --title "$tag" \
+              --notes "Finance Dashboard $tag. Install with BRAT: Settings → BRAT → Add beta plugin → bearbaitdesigns/obsidian_financedashboard. Tax and retirement figures are estimates for planning, not financial or tax advice."
+          fi
