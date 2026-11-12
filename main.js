@@ -102,7 +102,8 @@ function defaultData() {
   return {
     version: 1,
     settings: { currency: 'USD', locale: '', incomeView: 'net', filingStatus: 'single', link: { label: 'Finance dashboard', icon: 'wallet', image: '', style: 'card', size: 'medium', reuseTab: true },
-      invest: { showTab: true, range: '12', view: 'total', estimateContrib: true } },
+      invest: { showTab: true, range: '12', view: 'total', estimateContrib: true },
+      report: { name: '', months: '3', order: ['retirement', 'networth', 'investments', 'spending'] } },
     accounts: [],      // {id, name, group, kind, balance, contribution}
     history: [],       // {date:'YYYY-MM', assets, debts, net, retirement}
     invHistory: {},    // {'YYYY-MM': {accountId: balance}} — investment & retirement accounts, one entry per month
@@ -111,6 +112,7 @@ function defaultData() {
     credit: [],        // {id, date:'YYYY-MM-DD', score, bureau}
     transactions: [],  // {id, date, desc, amount, category, source:'debit'|'credit', card, note}
     incomeHistory: [], // {id, date, reason, employer, title, gross, net, note} — gross/net are guaranteed amounts PER MONTH
+    extraIncome: [],   // {id, name, kind, gross, net, start, end, note} — additional monthly income on top of the job above
     balanceNotes: [],  // {id, date, text} — written with each "Update balances" (or added by hand)
     whatIf: { scenarios: [], selected: 'base' }, // retirement sandbox; never used by the dashboard's own numbers
     retirementNotes: { text: '', updated: null },
@@ -323,11 +325,23 @@ function incomeOn(data, iso) {
   for (const h of hist) if (h.date <= iso) { prev = cur; cur = h; }
   return { cur, prev, upcoming: hist.find((h) => h.date > iso) || null, hist };
 }
-/** Guaranteed monthly income in effect for a month (YYYY-MM), using the change in effect at month end. */
+const EXTRA_KINDS = ['Side job', 'Freelance / gig work', 'Rental income', 'Dividends & interest', 'Pension / annuity', 'Social Security', 'Child support / alimony', 'Other'];
+/** Additional income sources active on a date (start ≤ date ≤ end). */
+function extraIncomeOn(data, iso) {
+  return (data.extraIncome || []).filter((x) => (!x.start || x.start <= iso) && (!x.end || x.end >= iso));
+}
+/** Job income plus every additional source in effect on a date, all per month. */
+function totalIncomeOn(data, iso) {
+  const { cur } = incomeOn(data, iso);
+  const extras = extraIncomeOn(data, iso);
+  const pg = cur ? num(cur.gross) : 0, pn = cur ? num(cur.net) : 0;
+  return { cur, extras, primaryGross: pg, primaryNet: pn, gross: pg + sum(extras, (x) => x.gross), net: pn + sum(extras, (x) => x.net) };
+}
+/** Guaranteed monthly income in effect for a month (YYYY-MM), using what's in effect at month end. */
 function monthlyIncome(data, key) {
   const [y, m] = key.split('-').map(Number);
-  const { cur } = incomeOn(data, isoDate(new Date(y, m, 0)));
-  return cur ? { gross: num(cur.gross), net: num(cur.net) } : { gross: 0, net: 0 };
+  const t = totalIncomeOn(data, isoDate(new Date(y, m, 0)));
+  return { gross: t.gross, net: t.net };
 }
 
 /** Every note that belongs to a month: balance-update notes, transaction notes and income notes. */
@@ -1220,12 +1234,16 @@ class IncomeModal extends Modal {
   constructor(app, plugin) { super(app); this.plugin = plugin; }
   onOpen() {
     this.modalEl.addClass('fd-modal', 'fd-manage-modal');
-    this.titleEl.setText('Income history');
+    this.titleEl.setText('Income');
     this.listener = () => this.renderList();
     this.plugin.listeners.add(this.listener);
     const bar = this.contentEl.createDiv({ cls: 'fd-manage-toolbar' });
-    bar.createSpan({ cls: 'fd-muted', text: 'Amounts are guaranteed monthly income. Click a change to edit or delete it.' });
+    bar.createSpan({ cls: 'fd-muted', text: 'Amounts are guaranteed monthly income. Click an item to edit or delete it.' });
     bar.createDiv({ cls: 'fd-spacer' });
+    const addX = bar.createEl('button', { cls: 'fd-btn' });
+    setIcon(addX.createSpan({ cls: 'fd-btn-icon' }), 'plus');
+    addX.createSpan({ text: 'Add income' });
+    addX.addEventListener('click', () => this.plugin.editExtraIncome());
     const add = bar.createEl('button', { cls: 'mod-cta fd-btn' });
     setIcon(add.createSpan({ cls: 'fd-btn-icon' }), 'trending-up');
     add.createSpan({ text: 'Update income' });
@@ -1240,7 +1258,30 @@ class IncomeModal extends Modal {
     el.empty();
     const today = todayISO();
     const { hist, cur } = incomeOn(this.plugin.data, today);
-    if (!hist.length) return emptyState(el, 'No income set up yet.');
+    const extras = [...(this.plugin.data.extraIncome || [])].sort((a, b) => String(b.start || '').localeCompare(String(a.start || '')));
+    if (extras.length) {
+      const head = el.createDiv({ cls: 'fd-manage-group-head' });
+      head.createSpan({ cls: 'fd-manage-group-name', text: 'Additional income' });
+      head.createSpan({ cls: 'fd-manage-subtotal', text: `${f.money(sum(extraIncomeOn(this.plugin.data, today), (x) => x.net))}/mo net now` });
+      for (const x of extras) {
+        const row = el.createDiv({ cls: 'fd-manage-row is-clickable fd-income-hist-row' });
+        row.addEventListener('click', () => this.plugin.editExtraIncome(x));
+        const name = row.createDiv({ cls: 'fd-manage-name' });
+        const t = name.createDiv({ cls: 'fd-manage-title' });
+        t.createSpan({ text: x.name || x.kind });
+        const active = (!x.start || x.start <= today) && (!x.end || x.end >= today);
+        if (active) t.createSpan({ cls: 'fd-badge is-on-track', text: 'Active' });
+        else if (x.start > today) t.createSpan({ cls: 'fd-badge is-close', text: 'Upcoming' });
+        else t.createSpan({ cls: 'fd-badge is-neutral', text: 'Ended' });
+        name.createDiv({ cls: 'fd-muted fd-manage-kind', text: [x.kind, x.start ? `from ${dateLabel(x.start)}` : '', x.end ? `to ${dateLabel(x.end)}` : ''].filter(Boolean).join(' · ') });
+        if (x.note) name.createDiv({ cls: 'fd-tx-note', text: x.note });
+        const amts = row.createDiv({ cls: 'fd-income-amts' });
+        amts.createDiv({ cls: 'fd-income-net', text: `${f.money(num(x.net))}/mo net` });
+        amts.createDiv({ cls: 'fd-muted', text: `${f.money(num(x.gross))}/mo gross` });
+      }
+      if (hist.length) { const h2 = el.createDiv({ cls: 'fd-manage-group-head' }); h2.createSpan({ cls: 'fd-manage-group-name', text: 'Job income changes' }); }
+    }
+    if (!hist.length) { if (!extras.length) emptyState(el, 'No income set up yet.'); return; }
     const rev = [...hist].reverse();
     rev.forEach((h, idx) => {
       const prev = rev[idx + 1];
@@ -2183,7 +2224,8 @@ class WhatIfModal extends Modal {
     const acts = top.createDiv({ cls: 'fd-wi-top-actions' });
     mkButton(acts, 'file-down', 'Save as PDF', () => this.exportPDF(), 'mod-cta');
     mkIconButton(acts, 'circle-help', 'How the projection works', () => new RetirementInfoModal(this.app, this.plugin).open()).addClass('fd-info-btn');
-    predictionNote(c, true);
+    // Prediction disclaimer on its own row at the very top.
+    c.insertBefore(predictionNote(c, true), top);
 
     const lay = c.createDiv({ cls: 'fd-wi-layout' });
     this.renderSide(lay.createDiv({ cls: 'fd-wi-side' }));
@@ -2552,6 +2594,792 @@ class WhatIfModal extends Modal {
       },
     }).open();
   }
+}
+
+/* ============================================================ PDF report */
+
+const REPORT_TYPES = {
+  retirement: { label: 'Retirement & Income', icon: 'sunset', desc: 'Settings and goals, projection, accounts, contribution limits, income sources and changes' },
+  networth: { label: 'Net Worth', icon: 'trending-up', desc: 'Trend, accounts and how they’re taxed, credit score, notes' },
+  investments: { label: 'Investments', icon: 'line-chart', desc: 'Growth, money put in vs market growth, account performance' },
+  spending: { label: 'Spending & Savings', icon: 'credit-card', desc: 'Spending by month and category, budgets, savings goals' },
+};
+
+/** Pick which reports go into the PDF (none pre-selected) and the order they print in. */
+class ReportModal extends Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+    const st = plugin.data.settings.report;
+    const saved = Array.isArray(st.order) ? st.order.filter((k) => REPORT_TYPES[k]) : [];
+    this.order = [...new Set([...saved, ...Object.keys(REPORT_TYPES)])];
+    this.chosen = new Set();
+    this.vals = { fileName: `Finance report ${todayISO()}`, name: st.name || '', months: String(st.months || '3'), transactions: false, openAfter: true };
+  }
+  onOpen() {
+    this.modalEl.addClass('fd-modal', 'fd-report-modal');
+    this.titleEl.setText('Create PDF report');
+    this.render();
+  }
+  onClose() { this.contentEl.empty(); }
+  render() {
+    const c = this.contentEl, p = this.plugin;
+    c.empty();
+    c.createEl('p', { cls: 'fd-modal-intro', text: 'Tick the reports to include and use the arrows to set the order they print in. Every PDF has a cover with contents and an appendix explaining how each figure is calculated, with sources. It’s saved to the “Finance Dashboard” folder in your vault.' });
+    const form = c.createDiv({ cls: 'fd-form' });
+    const field = (label, half) => { const r = form.createDiv({ cls: 'fd-field' + (half ? ' is-half' : '') }); r.createEl('label', { text: label }); return r; };
+    const fn = field('File name *', true).createEl('input', { attr: { type: 'text' } });
+    fn.value = this.vals.fileName;
+    fn.addEventListener('input', () => { this.vals.fileName = fn.value; });
+    const nm = field('Name on the report (optional)', true).createEl('input', { attr: { type: 'text', placeholder: 'Default: Settings → Your name' } });
+    nm.value = this.vals.name;
+    nm.addEventListener('input', () => { this.vals.name = nm.value; });
+
+    form.createEl('h4', { cls: 'fd-form-heading', text: 'Reports to include, in print order' });
+    const list = form.createDiv({ cls: 'fd-report-list' });
+    const invHidden = !invTabShown(p.data);
+    let n = 0;
+    this.order.forEach((key, idx) => {
+      const R = REPORT_TYPES[key], on = this.chosen.has(key);
+      const row = list.createDiv({ cls: 'fd-report-row' + (on ? ' is-on' : '') });
+      const num = row.createDiv({ cls: 'fd-report-num', text: on ? String(++n) : '' });
+      num.setAttr('aria-hidden', 'true');
+      const lab = row.createEl('label', { cls: 'fd-report-label' });
+      const cb = lab.createEl('input', { attr: { type: 'checkbox', 'aria-label': R.label } });
+      cb.checked = on;
+      cb.addEventListener('change', () => { if (cb.checked) this.chosen.add(key); else this.chosen.delete(key); this.render(); });
+      const txt = lab.createDiv({ cls: 'fd-report-text' });
+      const t = txt.createDiv({ cls: 'fd-report-title' });
+      setIcon(t.createSpan({ cls: 'fd-report-icon' }), R.icon);
+      t.createSpan({ text: R.label });
+      txt.createDiv({ cls: 'fd-muted fd-report-desc', text: R.desc + (key === 'investments' && invHidden ? ' · the tab is hidden, but its history is still saved' : '') });
+      const arrows = row.createDiv({ cls: 'fd-report-arrows' });
+      const move = (d) => { const j = idx + d; if (j < 0 || j >= this.order.length) return; [this.order[idx], this.order[j]] = [this.order[j], this.order[idx]]; this.render(); };
+      const up = arrows.createEl('button', { cls: 'fd-icon-btn clickable-icon', attr: { type: 'button', 'aria-label': `Move ${R.label} up` } });
+      setIcon(up, 'chevron-up'); up.disabled = idx === 0; up.addEventListener('click', () => move(-1));
+      const dn = arrows.createEl('button', { cls: 'fd-icon-btn clickable-icon', attr: { type: 'button', 'aria-label': `Move ${R.label} down` } });
+      setIcon(dn, 'chevron-down'); dn.disabled = idx === this.order.length - 1; dn.addEventListener('click', () => move(1));
+      if (key === 'spending' && on) {
+        const opts = row.createDiv({ cls: 'fd-report-sub' });
+        const sel = opts.createEl('select', { cls: 'dropdown', attr: { 'aria-label': 'Spending period' } });
+        for (const [v, l] of [['1', 'Last full month'], ['3', 'Last 3 full months'], ['6', 'Last 6 full months'], ['12', 'Last 12 full months']]) sel.createEl('option', { text: l, attr: { value: v } });
+        sel.value = this.vals.months;
+        sel.addEventListener('change', () => { this.vals.months = sel.value; });
+        const tl = opts.createEl('label', { cls: 'fd-report-check' });
+        const tc = tl.createEl('input', { attr: { type: 'checkbox' } });
+        tc.checked = this.vals.transactions;
+        tc.addEventListener('change', () => { this.vals.transactions = tc.checked; });
+        tl.createSpan({ text: 'List every transaction' });
+      }
+    });
+
+    form.createEl('h4', { cls: 'fd-form-heading', text: 'After saving' });
+    const ol = form.createDiv({ cls: 'fd-field is-checkbox' }).createEl('label');
+    const oc = ol.createEl('input', { attr: { type: 'checkbox' } });
+    oc.checked = this.vals.openAfter;
+    oc.addEventListener('change', () => { this.vals.openAfter = oc.checked; });
+    ol.append(' Open the PDF in a new tab');
+
+    const err = form.createDiv({ cls: 'fd-form-error' });
+    const btns = form.createDiv({ cls: 'fd-form-buttons' });
+    btns.createDiv({ cls: 'fd-spacer' });
+    btns.createEl('button', { text: 'Cancel', attr: { type: 'button' } }).addEventListener('click', () => this.close());
+    const go = btns.createEl('button', { cls: 'mod-cta', text: this.chosen.size ? `Save PDF (${this.chosen.size} report${this.chosen.size === 1 ? '' : 's'})` : 'Save PDF', attr: { type: 'button' } });
+    go.addEventListener('click', async () => {
+      if (!this.chosen.size) { err.setText('Choose at least one report to include.'); return; }
+      if (!this.vals.fileName.trim()) { err.setText('File name is required.'); fn.focus(); return; }
+      const st = p.data.settings.report;
+      Object.assign(st, { name: this.vals.name.trim(), months: this.vals.months, order: [...this.order] });
+      await p.save();
+      const order = this.order.filter((k) => this.chosen.has(k));
+      try {
+        const bytes = buildFinanceReport(p.data, { name: this.vals.name, order, retirement: this.chosen.has('retirement'), netWorth: this.chosen.has('networth'),
+          investments: this.chosen.has('investments'), spending: this.chosen.has('spending'), months: Number(this.vals.months || 3), transactions: this.vals.transactions }, new Fmt(p.data.settings));
+        const file = await p.savePdf(this.vals.fileName.trim(), bytes);
+        new Notice(`Saved ${file.path}`);
+        this.close();
+        if (this.vals.openAfter) await this.app.workspace.getLeaf('tab').openFile(file);
+      } catch (e) { err.setText(String((e && e.message) || e)); }
+    });
+  }
+}
+
+
+/**
+ * Multi-part finance report in the style of a clinical summary: a cover with contents and headline tiles, then one
+ * part per section (each with its own running header and "Page x of y"), and an appendix explaining the methods with
+ * numbered references. opts: {name, netWorth, investments, spending, months, transactions}
+ */
+function buildFinanceReport(data, opts, f) {
+  const pdf = new MiniPDF({ title: 'Finance report' });
+  const M = 48, W = pdf.W - 2 * M, TOP = 48, BOTTOM = pdf.H - 56;
+  const INK = '#1f2328', MUTED = '#6e7781', FAINT = '#8c959f', LINE = '#d0d7de', SOFT = '#f4f5f7', TILE = '#f3f4f6';
+  const GOOD = '#1a7f37', BAD = '#cf222e', WARN = '#9a6700';
+  const ACC = { summary: '#6d4fd8', retirement: '#2f8a57', networth: '#3a6db5', investments: '#25808f', spending: '#c05621', appendix: '#6d4fd8' };
+  const now = new Date();
+  const todayLong = now.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  const money = (v) => f.money(v), sMoney = (v) => signed(v, money);
+  const pct1 = (v) => f.pct(v, 1);
+  const tone = (v) => (v > 0 ? GOOD : v < 0 ? BAD : INK);
+
+  let y = TOP;
+  let part = null;                 // current part {key, title, color, footer, headerRight, pages:[]}
+  const parts = [];
+  const toc = [];                  // {title, part, page (absolute index)}
+  const newPage = () => {
+    pdf.addPage();
+    part.pages.push(pdf.page);
+    y = TOP;
+    // Running header on continuation pages
+    pdf.text(M, y + 9, part.title, { size: 8.5, bold: true, color: MUTED });
+    pdf.text(M + W, y + 9, part.headerRight, { size: 8.5, color: MUTED, align: 'right' });
+    y += 16;
+    pdf.line(M, y, M + W, y, { color: LINE, width: 0.6 });
+    y += 18;
+  };
+  const ensure = (h) => { if (y + h > BOTTOM) newPage(); };
+  const startPart = (key, title, metaLines, footer, headerRight) => {
+    if (parts.length) pdf.addPage();
+    part = { key, title, color: ACC[key], footer, headerRight: headerRight || `as of ${todayLong}`, pages: [pdf.page] };
+    parts.push(part);
+    y = TOP;
+    pdf.rect(M, y, W, 4.5, { fill: part.color });
+    y += 16;
+    pdf.text(M, y + 20, title, { size: 23, bold: true, color: INK });
+    y += 32;
+    for (const ml of metaLines.filter(Boolean)) for (const ln of pdf.wrap(ml, W, 10.5)) { pdf.text(M, y + 10, ln, { size: 10.5, color: MUTED }); y += 15; }
+    y += 10;
+  };
+  const heading = (t, o = {}) => {
+    ensure(o.keep || 90);
+    if (o.compact) {
+      pdf.text(M, y + 12, t, { size: 12.5, bold: true, color: o.color || part.color });
+      y += 18;
+      pdf.line(M, y, M + W, y, { color: LINE, width: 0.6 });
+      y += 9;
+      return;
+    }
+    y += 6;
+    pdf.text(M, y + 13, t, { size: 14, bold: true, color: o.color || part.color });
+    y += 21;
+    pdf.line(M, y, M + W, y, { color: LINE, width: 0.6 });
+    y += 12;
+    if (o.toc) toc.push({ title: t, part, pageObj: pdf.page });
+  };
+  const subheading = (t) => { ensure(36); pdf.text(M, y + 10, t, { size: 10.5, bold: true, color: INK }); y += 18; };
+  const para = (text, o = {}) => {
+    const size = o.size || 9, lh = size * 1.45, x = o.x || M;
+    for (const ln of pdf.wrap(text, o.width || (W - (x - M)), size, o.bold)) { ensure(lh); pdf.text(x, y + size, ln, { size, bold: o.bold, color: o.color || MUTED }); y += lh; }
+    y += o.after != null ? o.after : 4;
+  };
+  const bullets = (items, o = {}) => {
+    const size = o.size || 9, lh = size * 1.45;
+    for (const it of items.filter(Boolean)) {
+      const lines = pdf.wrap(`• ${it}`, W, size);
+      ensure(lines.length * lh);
+      for (const ln of lines) { pdf.text(M, y + size, ln, { size, color: INK }); y += lh; }
+    }
+    y += 2;
+  };
+  /** Grey stat tiles, 3 (or n) per row: {label, value, sub, color} */
+  const tiles = (items, n = 3, compact) => {
+    const gap = 10, w = (W - gap * (n - 1)) / n, h = compact ? 44 : 50;
+    for (let i = 0; i < items.length; i += n) {
+      ensure(h + 8);
+      items.slice(i, i + n).forEach((t, j) => {
+        if (!t) return;
+        const x = M + j * (w + gap);
+        pdf.rect(x, y, w, h, { fill: TILE });
+        pdf.text(x + 9, y + 15, pdf.fit(String(t.label).toUpperCase(), w - 18, 6.6, true), { size: 6.6, bold: true, color: MUTED });
+        pdf.text(x + 9, y + (compact ? 30 : 32), pdf.fit(t.value, w - 18, 13, true), { size: 13, bold: true, color: t.color || INK });
+        if (t.sub) pdf.text(x + 9, y + (compact ? 40 : 43), pdf.fit(t.sub, w - 18, 6.8), { size: 6.8, color: MUTED });
+      });
+      y += h + (compact ? 6 : 8);
+    }
+    y += compact ? 0 : 2;
+  };
+  /** Left-bar callout. kind: 'warn' (amber) | 'note' (accent on grey) */
+  const callout = (text, kind = 'note', color, onlyIfFits) => {
+    const size = 9, lh = 13;
+    const lines = pdf.wrap(text, W - 26, size);
+    const h = lines.length * lh + 14;
+    if (onlyIfFits && y + h > BOTTOM) return;
+    ensure(h + 6);
+    const bar = kind === 'warn' ? '#bf5b04' : color || part.color;
+    pdf.rect(M, y, W, h, { fill: kind === 'warn' ? '#fff4e0' : SOFT });
+    pdf.rect(M, y, 3, h, { fill: bar });
+    lines.forEach((ln, i) => pdf.text(M + 14, y + 11 + size * 0.35 + i * lh, ln, { size, color: kind === 'warn' ? '#8a4b00' : INK }));
+    y += h + 8;
+  };
+  /** Table with a grey header row and hairlines. cols:[{label,w,align}] rows:[{cells, tones, bold, swatch}] */
+  const table = (cols, rows, o = {}) => {
+    const widths = cols.map((c) => c.w * W);
+    const size = o.size || 8.5;
+    const head = () => {
+      pdf.rect(M, y, W, 18, { fill: SOFT });
+      let x = M;
+      cols.forEach((c, i) => {
+        pdf.text(c.align === 'right' ? x + widths[i] - 6 : x + 6, y + 12, pdf.fit(c.label, widths[i] - 10, 7.8, true), { size: 7.8, bold: true, color: MUTED, align: c.align === 'right' ? 'right' : 'left' });
+        x += widths[i];
+      });
+      y += 18;
+    };
+    ensure(18 + 40);
+    head();
+    for (const r of rows) {
+      // Wrap the cells that allow it; the row grows to the tallest cell.
+      const lines = r.cells.map((cell, i) => (cols[i].wrap ? pdf.wrap(String(cell == null ? '' : cell), widths[i] - 12 - (i === 0 && r.swatch ? 12 : 0), size) : [String(cell == null ? '' : cell)]));
+      const rh = Math.max(19, 8 + Math.max(...lines.map((l) => l.length)) * (size + 3.5));
+      if (y + rh > BOTTOM) { newPage(); head(); }
+      let x = M;
+      lines.forEach((ls, i) => {
+        let tx = cols[i].align === 'right' ? x + widths[i] - 6 : x + 6;
+        let avail = widths[i] - 12;
+        if (i === 0 && r.swatch) { pdf.rect(x + 6, y + 6, 8, 8, { fill: r.swatch }); tx += 12; avail -= 12; }
+        ls.forEach((ln, k) => pdf.text(tx, y + 13 + k * (size + 3.5), cols[i].wrap ? ln : pdf.fit(ln, avail, size, r.bold), { size, bold: r.bold || (r.boldCols && r.boldCols.includes(i)),
+          color: (r.tones && r.tones[i]) || INK, align: cols[i].align === 'right' ? 'right' : 'left' }));
+        x += widths[i];
+      });
+      y += rh;
+      pdf.line(M, y, M + W, y, { color: LINE, width: 0.45 });
+    }
+    y += 8;
+  };
+  /** Line chart: labels[], series[{name,color,values,dash,width}], hlines[{value,label,color}], vlines[{index,label}] */
+  const lineChart = (o) => {
+    const H = o.height || 190;
+    ensure(H + 30);
+    const P = { l: 46, r: 8, t: 10, b: 20 };
+    const x0 = M + P.l, x1 = M + W - P.r, y0 = y + P.t, y1 = y + H - P.b;
+    const n = o.labels.length;
+    const vals = o.series.flatMap((s) => s.values.filter((v) => v != null)).concat((o.hlines || []).map((h) => h.value));
+    if (!vals.length || n < 1) return;
+    const sc = niceScale(o.zero ? Math.min(0, ...vals) : Math.min(...vals), Math.max(...vals, 1));
+    if (o.zero && sc.min > 0) sc.min = 0;
+    const X = (i) => x0 + (n <= 1 ? (x1 - x0) / 2 : (i * (x1 - x0)) / (n - 1));
+    const Y = (v) => y1 - ((v - sc.min) / (sc.max - sc.min || 1)) * (y1 - y0);
+    for (let v = sc.min; v <= sc.max + sc.step / 2; v += sc.step) {
+      pdf.line(x0, Y(v), x1, Y(v), { color: '#e3e6ea', width: 0.5 });
+      pdf.text(x0 - 6, Y(v) + 3, f.compact(v), { size: 7, color: FAINT, align: 'right' });
+    }
+    const every = Math.max(1, Math.ceil(n / (o.maxLabels || 8)));
+    for (let i = 0; i < n; i += every) if (n - 1 - i >= every / 2 || i === 0) pdf.text(X(i), y1 + 12, o.labels[i], { size: 7, color: FAINT, align: i === 0 ? 'left' : 'center' });
+    if (n > 1) pdf.text(X(n - 1), y1 + 12, o.labels[n - 1], { size: 7, color: FAINT, align: 'right' });
+    for (const h of o.hlines || []) {
+      pdf.line(x0, Y(h.value), x1, Y(h.value), { color: h.color || '#57606a', width: 0.7, dash: [3, 3] });
+      if (h.label) pdf.text(x1 - 2, Y(h.value) - 4, h.label, { size: 7, color: h.color || MUTED, align: 'right', bold: true });
+    }
+    for (const v of o.vlines || []) {
+      if (v.index < 0 || v.index > n - 1) continue;
+      pdf.line(X(v.index), y0, X(v.index), y1, { color: '#afb8c1', width: 0.6, dash: [1, 3] });
+      if (v.label) pdf.text(X(v.index) + 4, y0 + 8, v.label, { size: 7, color: MUTED });
+    }
+    for (const s of o.series) {
+      // Draw each unbroken run of values
+      let run = [];
+      const flush = () => { if (run.length > 1) pdf.polyline(run, { color: s.color, width: s.width || 1.6, dash: s.dash }); run = []; };
+      s.values.forEach((v, i) => { if (v == null) flush(); else run.push([X(i), Y(v)]); });
+      flush();
+    }
+    y += H;
+    legendRow(o.series.map((s) => ({ label: s.name, color: s.color, dash: s.dash })).concat(o.extraLegend || []));
+  };
+  const legendRow = (items) => {
+    if (!items.length) return;
+    let lx = M + 46;
+    ensure(14);
+    for (const it of items) {
+      const wl = pdf.width(it.label, 7.5) + 30;
+      if (lx + wl > M + W) { lx = M + 46; y += 12; ensure(12); }
+      if (it.dash) pdf.line(lx, y + 4, lx + 12, y + 4, { color: it.color, width: 1.8, dash: it.dash });
+      else pdf.rect(lx, y, 8, 8, { fill: it.color });
+      pdf.text(lx + (it.dash ? 16 : 12), y + 7, it.label, { size: 7.5, color: MUTED });
+      lx += wl;
+    }
+    y += 18;
+  };
+  /** Column chart for monthly values (positive only). */
+  const columnChart = (labels, series, o = {}) => {
+    const H = o.height || 170;
+    ensure(H + 30);
+    const P = { l: 46, r: 8, t: 12, b: 20 };
+    const x0 = M + P.l, x1 = M + W - P.r, y0 = y + P.t, y1 = y + H - P.b;
+    const totalsArr = labels.map((_, i) => sum(series, (s) => s.values[i] || 0));
+    const sc = niceScale(0, Math.max(...totalsArr, o.ref || 0, 1)); sc.min = 0;
+    const Y = (v) => y1 - (v / sc.max) * (y1 - y0);
+    for (let v = 0; v <= sc.max + sc.step / 2; v += sc.step) {
+      pdf.line(x0, Y(v), x1, Y(v), { color: '#e3e6ea', width: 0.5 });
+      pdf.text(x0 - 6, Y(v) + 3, f.compact(v), { size: 7, color: FAINT, align: 'right' });
+    }
+    const bw = (x1 - x0) / labels.length;
+    labels.forEach((l, i) => {
+      let acc = 0;
+      const bx = x0 + i * bw + bw * 0.22, w = bw * 0.56;
+      for (const s of series) {
+        const v = s.values[i] || 0;
+        if (v <= 0) continue;
+        pdf.rect(bx, Y(acc + v), w, Y(acc) - Y(acc + v), { fill: s.color });
+        acc += v;
+      }
+      if (o.valueLabels && totalsArr[i] > 0) pdf.text(bx + w / 2, Y(totalsArr[i]) - 3, f.compact(totalsArr[i]), { size: 6.5, color: MUTED, align: 'center' });
+      pdf.text(bx + w / 2, y1 + 12, l, { size: 7, color: FAINT, align: 'center' });
+    });
+    if (o.ref) {
+      pdf.line(x0, Y(o.ref), x1, Y(o.ref), { color: '#24292f', width: 0.7 });
+    }
+    y += H;
+    legendRow(series.map((s) => ({ label: s.name, color: s.color })).concat(o.ref ? [{ label: o.refLabel || 'Line: budget', color: '#24292f' }] : []));
+  };
+  /** Horizontal bars with a label column and value text (template "Symptoms" style). rows:[{label,value,frac,color,text}] */
+  const hbars = (rows, o = {}) => {
+    const lw = o.labelW || 150, tw = o.textW || 120, bw = W - lw - tw - 12;
+    for (const r of rows) {
+      ensure(16);
+      pdf.text(M, y + 9, pdf.fit(r.label, lw - 8, 8.5), { size: 8.5, color: INK });
+      pdf.rect(M + lw, y + 2, bw, 8, { fill: '#eceef1' });
+      pdf.rect(M + lw, y + 2, Math.max(0.5, bw * clamp(r.frac, 0, 1)), 8, { fill: r.color || part.color });
+      pdf.text(M + W, y + 9, r.text, { size: 8, color: r.textColor || MUTED, align: 'right' });
+      y += 15;
+    }
+    y += 6;
+  };
+
+  /* ---------------- data */
+  const d = data, r = d.retirement;
+  const plan = simulateRetirement(d, null);
+  const t = totals(d);
+  const nw = nwStats(d);
+  const iv = invStats(d);
+  const today = todayISO(), curKey = monthKey(now);
+  const tot = totalIncomeOn(d, today);
+  const incH = incomeOn(d, today);
+  const name = String(opts.name || '').trim();
+  const avgSpend3 = sum([1, 2, 3].map((i) => sum(txFor(d, addMonths(curKey, -i)), (x) => x.amount))) / 3;
+  const included = { retirement: !!opts.retirement, income: !!opts.retirement, networth: !!opts.netWorth, investments: !!opts.investments, spending: !!opts.spending };
+  // Print order: opts.order lists report keys; anything missing falls back to the standard order.
+  const ORDER = [...new Set([...(opts.order || []), 'retirement', 'networth', 'investments', 'spending'])].filter((k) => included[k]);
+  const run = (fns) => ORDER.forEach((k) => fns[k] && fns[k]());
+
+  // References used by the appendix, numbered in order of first use.
+  const refs = [];
+  const cite = (keys) => keys.filter((k) => SOURCES[k]).map((k) => { let i = refs.indexOf(k); if (i < 0) { refs.push(k); i = refs.length - 1; } return `[${i + 1}]`; }).join(' ');
+
+  /* ---------------- cover / summary */
+  startPart('summary', 'Finance report', [name ? `Name: ${name}` : null, `Created ${todayLong}`, `Amounts in ${d.settings.currency || 'USD'} · retirement projections in today’s dollars · predictions, not guarantees`],
+    'Finance report · from Finance Dashboard for Obsidian · predictions, not financial advice');
+  heading('Contents', { keep: 40, compact: true });
+  const tocRowsPlanned = (included.retirement ? 1 : 0) + (included.networth ? 1 : 0) + (included.investments ? 1 : 0) + (included.spending ? 1 : 0) + 1;
+  const tocY = y, tocPage = pdf.page;
+  y += 18 + tocRowsPlanned * 17 + 12;
+
+  const coverRet = () => {
+    heading('Retirement', { color: ACC.retirement, compact: true, keep: 80 });
+    tiles([
+      { label: 'Status', value: plan.target ? `${STATUS_TEXT[plan.status]} · ${f.pct(plan.ratio)}` : '—', sub: `of target projected at ${plan.targetAge}`, color: plan.status === 'on-track' ? GOOD : plan.status === 'behind' ? BAD : WARN },
+      { label: 'Estimated retirement', value: plan.estDate ? `${plan.estDate.getFullYear()} · age ${plan.estAge.toFixed(1)}` : 'After 100', sub: `goal age ${plan.targetAge}` },
+      { label: 'Retirement savings', value: money(plan.balance), sub: `${money(plan.contribution)}/yr contributions` },
+    ]);
+    heading('Income', { color: ACC.retirement, compact: true, keep: 80 });
+    tiles([
+      { label: 'Monthly take-home', value: money(tot.net), sub: tot.extras.length ? `${tot.extras.length + (tot.cur ? 1 : 0)} sources` : 'guaranteed each month' },
+      { label: 'Monthly gross', value: money(tot.gross), sub: `${money(tot.gross * 12)} per year` },
+      { label: 'Left after spending', value: avgSpend3 ? money(tot.net - avgSpend3) : '—', sub: avgSpend3 ? `avg spend ${money(avgSpend3)}/mo` : 'no spending yet', color: avgSpend3 ? tone(tot.net - avgSpend3) : null },
+    ]);
+  };
+  const coverNW = () => {
+    heading('Net worth', { color: ACC.networth, compact: true, keep: 80 });
+    tiles([
+      { label: 'Net worth', value: money(nw.net), sub: nw.prev ? `${sMoney(nw.net - nw.prev.net)} vs ${monthLabel(nw.prev.date)}` : '' },
+      { label: '12-month change', value: nw.yearAgo ? sMoney(nw.net - nw.yearAgo.net) : '—', sub: nw.yearAgo && nw.yearAgo.net ? signed((nw.net - nw.yearAgo.net) / Math.abs(nw.yearAgo.net), pct1) : 'needs a year of history', color: nw.yearAgo ? tone(nw.net - nw.yearAgo.net) : null },
+      { label: 'Credit score', value: nw.lastScore ? String(nw.lastScore.score) : '—', sub: nw.lastScore ? `${creditBand(nw.lastScore.score)} · ${dateLabel(nw.lastScore.date)}` : '' },
+    ], 3, true);
+  };
+  const coverInv = () => {
+    heading('Investments', { color: ACC.investments, compact: true, keep: 80 });
+    tiles([
+      { label: 'Total invested', value: money(iv.total), sub: `taxable ${f.compact(iv.taxable)} · retirement ${f.compact(iv.retirement)}` },
+      { label: iv.y1 && !iv.y1Exact ? `Market growth since ${monthLabel(iv.y1.from)}` : '12-month market growth', value: iv.y1 ? sMoney(iv.y1.growth) : '—', sub: iv.y1 ? `${sMoney(iv.y1.moneyIn)} put in (est.)` : 'needs history', color: iv.y1 ? tone(iv.y1.growth) : null },
+      { label: 'Estimated return', value: iv.y1 ? retLabel(iv.y1, f) : '—', sub: iv.y1 ? `over ${iv.y1.months} months` : '' },
+    ], 3, true);
+  };
+  const coverSp = () => {
+    const months = Math.max(1, num(opts.months) || 3);
+    const keys = Array.from({ length: months }, (_, i) => addMonths(curKey, -(months - i)));
+    const spent = sum(keys, (k) => sum(txFor(d, k), (x) => x.amount));
+    heading('Spending & savings', { color: ACC.spending, compact: true, keep: 80 });
+    tiles([
+      { label: `Spending · last ${months} mo`, value: money(spent), sub: `${money(spent / months)}/mo average` },
+      { label: `Spent in ${monthLabel(curKey, true).split(' ')[0]}`, value: money(sum(txFor(d, curKey), (x) => x.amount)), sub: 'month to date' },
+      { label: 'Savings goals', value: d.goals.length ? `${f.pct(sum(d.goals, (g) => goalInfo(g).saved) / Math.max(1, sum(d.goals, (g) => goalInfo(g).target)))} saved` : '—', sub: d.goals.length ? `${d.goals.length} goals` : 'none yet' },
+    ], 3, true);
+  };
+  run({ retirement: coverRet, networth: coverNW, investments: coverInv, spending: coverSp });
+  // The cover stays one page: the disclaimer is repeated in every footer and the appendix, so it's skipped here if it won't fit.
+  callout('Prediction, not a guarantee. Retirement figures are estimates from your inputs and steady average returns; actual results will differ. Balances are before tax. Not financial, tax or legal advice.', 'warn', null, true);
+
+  /* ---------------- retirement report */
+  const partRet = () => {
+    const retMeta = [name ? `Name: ${name}` : null, `Created ${todayLong} · current age ${plan.age.toFixed(1)} · goal: retire at ${plan.targetAge}`, `Today’s dollars · ${f.pct(plan.real, 1)} real return · U.S. tax rules: ${taxAsOf()}`];
+    startPart('retirement', 'Retirement report', retMeta, 'Retirement report · predictions in today’s dollars · not a guarantee or financial advice');
+    toc.push({ title: 'Retirement & income', part, pageObj: pdf.page });
+    heading('Summary');
+    tiles([
+      { label: 'Retirement savings', value: money(plan.balance), sub: `${plan.accounts.length} accounts${num(r.includeInvestments) || r.includeInvestments ? ' · incl. taxable' : ''}` },
+      { label: 'Contributions', value: `${money(plan.contribution)}/yr`, sub: `${money(plan.contribution / 12)}/mo` },
+      { label: 'Target nest egg', value: money(plan.target), sub: `${money(plan.need)}/yr at ${num(r.withdrawalRate)}% withdrawal` },
+      { label: 'Estimated retirement', value: plan.estDate ? `${plan.estDate.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}` : 'After 100', sub: plan.estAge != null ? `age ${plan.estAge.toFixed(1)} · goal ${plan.targetAge}` : 'target not reached by 100' },
+      { label: `Projected at ${plan.targetAge}`, value: money(plan.projectedAtTarget), sub: `${f.pct(plan.ratio)} of target · ${STATUS_TEXT[plan.status]}`, color: plan.status === 'on-track' ? GOOD : plan.status === 'behind' ? BAD : WARN },
+      { label: 'Money lasts until', value: plan.lastsText, sub: `supports ${money(plan.sustainableIncome)}/yr` },
+    ]);
+    if (plan.extraNeededYr > 0.5) callout(`To reach your target by age ${plan.targetAge}, contributions would need to rise by about ${money(plan.extraNeededYr)}/yr (to ${money(plan.contribution + plan.extraNeededYr)}/yr), or plan on retiring around ${plan.estAge != null ? Math.ceil(plan.estAge) : 'a later age'}.`, 'warn');
+    else callout(`On track: at ${plan.targetAge} you’re projected to have ${money(plan.projectedAtTarget)}, ${f.pct(plan.ratio)} of your ${money(plan.target)} target.`);
+
+    heading('Your settings and goals');
+    table([{ label: 'Setting', w: 0.36 }, { label: 'Your value', w: 0.26, align: 'right' }, { label: 'What it means', w: 0.38, wrap: true }], [
+      { cells: ['Birth date · current age', `${dateLabel(r.birthDate)} · ${plan.age.toFixed(1)}`, 'Used to place your goals on a timeline.'] },
+      { cells: ['Target retirement age', String(plan.targetAge), 'When you’d like to stop working.'] },
+      { cells: ['Desired income (today’s $)', `${money(num(r.annualIncome))}/yr`, 'What you plan to spend each year in retirement.'] },
+      { cells: ['Social Security / pension', `${money(num(r.otherIncome))}/yr`, 'Income that doesn’t come from savings; lowers the target.'] },
+      { cells: ['Withdrawal rate', `${num(r.withdrawalRate)}%`, 'Share of savings taken in the first year of retirement.'] },
+      { cells: ['Expected annual return', `${num(r.expectedReturn)}%`, 'Average yearly growth before inflation, after fees.'] },
+      { cells: ['Inflation', `${num(r.inflation)}%`, 'Taken out of the return so amounts stay in today’s dollars.'] },
+      { cells: ['Real return (calculated)', pct1(plan.real), '(1 + return) ÷ (1 + inflation) − 1.'] },
+      { cells: ['Count taxable investments', r.includeInvestments ? 'Yes' : 'No', 'Whether brokerage accounts count toward retirement.'] },
+    ].map((row) => Object.assign(row, { boldCols: [1] })));
+
+    heading('Projected savings by age', { keep: 270 });
+    para('Your retirement savings grown at your real return with today’s contributions added monthly. The dashed line is your target nest egg.');
+    {
+      const maxAge = Math.min(100, Math.max(plan.targetAge + 10, (plan.estAge || 0) + 3, plan.age + 10));
+      const pts = plan.points.filter((p) => p.age <= maxAge + 0.01);
+      const stepP = Math.max(1, Math.round(pts.length / 60));
+      const sampled = pts.filter((_, i) => i % stepP === 0 || i === pts.length - 1);
+      const ti = sampled.findIndex((p) => p.age >= plan.targetAge - 0.01);
+      lineChart({ labels: sampled.map((p) => `Age ${Math.round(p.age)}`), maxLabels: 9, zero: true, height: 200,
+        series: [{ name: 'Projected savings (today’s dollars)', color: ACC.retirement, values: sampled.map((p) => p.balance), width: 2 }],
+        hlines: plan.target ? [{ value: plan.target, label: `Target ${money(plan.target)}`, color: '#57606a' }] : [],
+        vlines: ti >= 0 ? [{ index: ti, label: `Goal ${plan.targetAge}` }] : [],
+        extraLegend: plan.target ? [{ label: 'Target nest egg', color: '#57606a', dash: [3, 3] }] : [] });
+    }
+
+    heading('Retirement accounts');
+    const retAccts = plan.accounts || [];
+    table([{ label: 'Account', w: 0.3 }, { label: 'Type', w: 0.16 }, { label: 'Tax treatment', w: 0.2 }, { label: 'Balance', w: 0.13, align: 'right' }, { label: 'Per year', w: 0.12, align: 'right' }, { label: 'Share', w: 0.09, align: 'right' }],
+      retAccts.map((a, i) => ({ swatch: PALETTE[i % PALETTE.length], cells: [a.name, a.kind || '—', taxBucket(a.kind), money(num(a.balance)), money(num(a.contribution)), plan.balance ? f.pct(num(a.balance) / plan.balance) : '—'] }))
+        .concat([{ bold: true, cells: ['Total', '', '', money(plan.balance), money(plan.contribution), '100%'] }]));
+
+    const checks = contributionChecks(d);
+    if (checks.length) {
+      heading(`${taxYear()} IRS contribution limits`);
+      table([{ label: 'Limit', w: 0.3, wrap: true }, { label: 'You contribute', w: 0.15, align: 'right' }, { label: 'Limit', w: 0.13, align: 'right' }, { label: 'Note', w: 0.42, wrap: true }],
+        checks.map((c) => ({ cells: [c.label, money(c.contribution), money(c.limit), c.note], tones: [null, c.status === 'over' ? BAD : c.status === 'warn' ? WARN : null] })));
+    }
+    {
+      const hist = invTimeline(d).filter((h) => h.retirement != null).slice(-24);
+      if (hist.length >= 2) {
+        heading('Retirement balance history', { keep: 220 });
+        lineChart({ labels: hist.map((h) => monthLabel(h.date)), height: 160, series: [{ name: 'Retirement savings', color: ACC.retirement, values: hist.map((h) => h.retirement), width: 1.8 }] });
+      }
+    }
+
+    // Income (from the Overview tab)
+    heading('Income');
+    para('Income is a guaranteed amount per month and stays in effect until a change is recorded. Additional sources count while they’re active.');
+    {
+      const G = tot.gross, N = tot.net, D = Math.max(0, G - N);
+      tiles([
+        { label: 'Monthly take-home', value: money(N), sub: tot.extras.length ? `${tot.extras.length + (tot.cur ? 1 : 0)} sources` : 'guaranteed each month' },
+        { label: 'Monthly gross', value: money(G), sub: 'before taxes & deductions' },
+        { label: 'Taxes & deductions', value: `${money(D)}/mo`, sub: G ? `${f.pct(D / G)} of gross` : '' },
+        { label: 'Take-home per year', value: money(N * 12), sub: `${money(G * 12)} gross` },
+        { label: 'Average spending', value: avgSpend3 ? `${money(avgSpend3)}/mo` : '—', sub: 'last 3 full months' },
+        { label: 'Left after spending', value: avgSpend3 ? money(N - avgSpend3) : '—', sub: avgSpend3 && N ? `${f.pct((N - avgSpend3) / N)} savings rate` : '', color: avgSpend3 ? tone(N - avgSpend3) : null },
+      ]);
+      const srcRows = [];
+      if (tot.cur) srcRows.push({ cells: [[tot.cur.title, tot.cur.employer].filter(Boolean).join(' · ') || 'Job', 'Job', `since ${dateLabel(tot.cur.date)}`, money(num(tot.cur.gross)), money(num(tot.cur.net))] });
+      for (const x of (d.extraIncome || []).filter((x) => !x.end || x.end >= today)) {
+        srcRows.push({ cells: [x.name || x.kind, x.kind || '', x.start > today ? `starts ${dateLabel(x.start)}` : x.end ? `until ${dateLabel(x.end)}` : `since ${dateLabel(x.start)}`, money(num(x.gross)), money(num(x.net))] });
+      }
+      if (srcRows.length) {
+        subheading('Income sources');
+        table([{ label: 'Source', w: 0.32 }, { label: 'Type', w: 0.18 }, { label: 'When', w: 0.2 }, { label: 'Gross / mo', w: 0.15, align: 'right' }, { label: 'Net / mo', w: 0.15, align: 'right' }],
+          srcRows.concat([{ bold: true, cells: ['Total now', '', '', money(G), money(N)] }]));
+      }
+      if (incH.hist.length) {
+        subheading('Income changes');
+        const hs = [...incH.hist].reverse();
+        table([{ label: 'Date', w: 0.14 }, { label: 'What changed', w: 0.17 }, { label: 'Job', w: 0.27 }, { label: 'Gross / mo', w: 0.13, align: 'right' }, { label: 'Net / mo', w: 0.13, align: 'right' }, { label: 'Change', w: 0.16, align: 'right' }],
+          hs.map((h, i) => {
+            const p = hs[i + 1];
+            const dv = p ? num(h.net) - num(p.net) : null;
+            return { cells: [dateLabel(h.date), h.reason || '', [h.title, h.employer].filter(Boolean).join(' · '), money(num(h.gross)), money(num(h.net)), dv == null ? '—' : `${sMoney(dv)} net`], tones: [null, null, null, null, null, dv == null ? null : tone(dv)] };
+          }));
+        const notes = hs.filter((h) => h.note);
+        if (notes.length) table([{ label: 'Date', w: 0.18 }, { label: 'Income note', w: 0.82, wrap: true }], notes.map((h) => ({ cells: [dateLabel(h.date), h.note] })));
+      }
+    }
+    if (d.retirementNotes && String(d.retirementNotes.text || '').trim()) {
+      heading('My retirement notes');
+      callout(String(d.retirementNotes.text).trim());
+    }
+  };
+
+  /* ---------------- net worth report */
+  const partNW = () => {
+    startPart('networth', 'Net worth report', [name ? `Name: ${name}` : null, `Created ${todayLong} · ${nw.hist.length} monthly snapshots${nw.hist.length ? ` since ${monthLabel(nw.hist[0].date, true)}` : ''}`, 'Balances before tax'],
+      'Net worth report · balances before tax · not financial advice');
+    toc.push({ title: 'Net worth', part, pageObj: pdf.page });
+    heading('Summary');
+    tiles([
+      { label: 'Net worth', value: money(nw.net), sub: nw.prev ? `${sMoney(nw.net - nw.prev.net)} this month` : '' },
+      { label: 'Total assets', value: money(nw.assets), sub: `${d.accounts.filter((a) => a.group !== 'debt').length} accounts` },
+      { label: 'Total debts', value: money(nw.debts), sub: nw.dta != null ? `debt-to-asset ${f.pct(nw.dta)}` : '' },
+      { label: '12-month change', value: nw.yearAgo ? sMoney(nw.net - nw.yearAgo.net) : '—', sub: nw.yearAgo && nw.yearAgo.net ? signed((nw.net - nw.yearAgo.net) / Math.abs(nw.yearAgo.net), pct1) : 'needs a year of history', color: nw.yearAgo ? tone(nw.net - nw.yearAgo.net) : null },
+      { label: 'Emergency cushion', value: nw.emergencyMonths != null ? `${nw.emergencyMonths.toFixed(1)} months` : '—', sub: `cash ${money(nw.cash)}` },
+      { label: 'Credit score', value: nw.lastScore ? String(nw.lastScore.score) : '—', sub: nw.lastScore ? `${creditBand(nw.lastScore.score)}${nw.prevScore ? ` · ${signed(nw.lastScore.score - nw.prevScore.score, (v) => `${v} pts`)}` : ''}` : '' },
+    ]);
+    const h = nw.hist.slice(-24);
+    if (h.length >= 2) {
+      heading('Net worth trend', { keep: 250 });
+      para(`Monthly snapshots, ${monthLabel(h[0].date, true)} to ${monthLabel(h[h.length - 1].date, true)}.`);
+      lineChart({ labels: h.map((x) => monthLabel(x.date)), height: 180, series: [
+        { name: 'Net worth', color: ACC.networth, values: h.map((x) => x.net), width: 2 },
+        { name: 'Assets', color: '#54A24B', values: h.map((x) => x.assets), dash: [4, 3], width: 1.2 },
+        { name: 'Debts', color: '#E45756', values: h.map((x) => x.debts), dash: [4, 3], width: 1.2 }] });
+    }
+    heading('Assets and debts by group');
+    const glab = { budget: 'On-budget (cash)', investment: 'Taxable investments', retirement: 'Retirement', property: 'Property & other', debt: 'Debts' };
+    const gcol = { budget: PALETTE[4], investment: PALETTE[0], retirement: PALETTE[2], property: PALETTE[7], debt: PALETTE[3] };
+    hbars(['budget', 'investment', 'retirement', 'property'].filter((g) => t.byGroup[g]).map((g) => ({ label: glab[g], frac: t.assets ? (t.byGroup[g] || 0) / t.assets : 0, color: gcol[g], text: `${money(t.byGroup[g] || 0)} (${t.assets ? f.pct((t.byGroup[g] || 0) / t.assets) : '—'})` })),
+      { labelW: 140, textW: 130 });
+    heading('Accounts');
+    const order = ['budget', 'investment', 'retirement', 'property', 'debt'];
+    const accts = [...d.accounts].sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group) || Math.abs(num(b.balance)) - Math.abs(num(a.balance)));
+    table([{ label: 'Account', w: 0.21 }, { label: 'Group', w: 0.15 }, { label: 'Type', w: 0.13 }, { label: 'Balance', w: 0.12, align: 'right' }, { label: 'How it’s taxed (U.S. federal)', w: 0.39, wrap: true }],
+      accts.map((a) => {
+        const cat = taxCategoryOf(a), info = taxInfo()[cat];
+        return { swatch: gcol[a.group], cells: [a.name, glab[a.group], a.kind || '—', (a.group === 'debt' ? '−' : '') + money(Math.abs(num(a.balance))), cat === 'debt' ? debtTax(debtKindOf(a)) : info ? info.short : ''], tones: [null, null, null, a.group === 'debt' ? BAD : null] };
+      }), { size: 8 });
+    const credit = [...(d.credit || [])].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 12);
+    if (credit.length) {
+      heading('Credit score history');
+      table([{ label: 'Date', w: 0.25 }, { label: 'Score', w: 0.15, align: 'right' }, { label: 'Rating', w: 0.25 }, { label: 'Change', w: 0.15, align: 'right' }, { label: 'Source', w: 0.2 }],
+        credit.map((c, i) => { const p = credit[i + 1]; const dv = p ? c.score - p.score : null; return { cells: [dateLabel(c.date), String(c.score), creditBand(c.score), dv == null ? '—' : `${dv > 0 ? '+' : dv < 0 ? '−' : '±'}${Math.abs(dv)}`, c.bureau || ''], tones: [null, null, null, dv ? tone(dv) : null] }; }));
+    }
+    const notes = [...(d.balanceNotes || [])].filter((n) => n.date >= isoDate(new Date(now.getFullYear() - 1, now.getMonth(), 1))).sort((a, b) => a.date.localeCompare(b.date));
+    if (notes.length) {
+      heading('Notes');
+      table([{ label: 'Date', w: 0.18 }, { label: 'Note', w: 0.82, wrap: true }], notes.map((n) => ({ cells: [dateLabel(n.date), n.text] })));
+    }
+  };
+
+  /* ---------------- investments report */
+  const partInv = () => {
+    startPart('investments', 'Investments report', [name ? `Name: ${name}` : null, `Created ${todayLong} · ${iv.accts.length} accounts · ${iv.months} months of account history`, iv.est ? 'Money put in is estimated from each account’s yearly contribution' : 'Contribution estimate off: all change counts as growth'],
+      'Investments report · estimates, not investment advice');
+    toc.push({ title: 'Investments', part, pageObj: pdf.page });
+    heading('Summary');
+    tiles([
+      { label: 'Total invested', value: money(iv.total), sub: iv.m1 ? `${sMoney(iv.m1.change)} this month` : '' },
+      { label: 'Taxable investments', value: money(iv.taxable), sub: iv.total ? `${f.pct(iv.taxable / iv.total)} of invested` : '' },
+      { label: 'Retirement accounts', value: money(iv.retirement), sub: iv.total ? `${f.pct(iv.retirement / iv.total)} of invested` : '' },
+      { label: iv.y1 && !iv.y1Exact ? `Change since ${monthLabel(iv.y1.from)}` : '12-month change', value: iv.y1 ? sMoney(iv.y1.change) : '—', sub: iv.y1 ? `${money(iv.y1.start)} → ${money(iv.y1.end)}` : 'needs history' },
+      { label: 'Money put in (est.)', value: iv.y1 ? sMoney(iv.y1.moneyIn) : '—', sub: iv.y1 && iv.y1.flows ? `incl. ${sMoney(iv.y1.flows)} accounts opened/closed` : `${money(iv.contribYr)}/yr from settings` },
+      { label: 'Market growth', value: iv.y1 ? sMoney(iv.y1.growth) : '—', sub: iv.y1 ? `${retLabel(iv.y1, f)} estimated return` : '', color: iv.y1 ? tone(iv.y1.growth) : null },
+    ]);
+    const tl = iv.tl.slice(-24);
+    if (tl.length >= 2) {
+      heading('Growth', { keep: 250 });
+      lineChart({ labels: tl.map((x) => monthLabel(x.date)), height: 180, series: [
+        { name: 'Total invested', color: ACC.investments, values: tl.map((x) => x.total), width: 2 },
+        { name: 'Taxable', color: PALETTE[0], values: tl.map((x) => x.taxable), dash: [4, 3], width: 1.2 },
+        { name: 'Retirement', color: PALETTE[2], values: tl.map((x) => x.retirement), dash: [4, 3], width: 1.2 }] });
+      subheading('Month by month');
+      const rows = [];
+      const full = iv.tl;
+      const lastRows = full.slice(-13);
+      for (let k = lastRows.length - 1; k >= 1; k--) {
+        const ti = full.indexOf(lastRows[k]);
+        const g = invGrowth(d, full, ti - 1, ti);
+        rows.push({ cells: [monthLabel(lastRows[k].date, true), lastRows[k].taxable != null ? money(lastRows[k].taxable) : '—', money(lastRows[k].retirement), lastRows[k].total != null ? money(lastRows[k].total) : '—',
+          g ? sMoney(g.moneyIn) : '—', g ? sMoney(g.growth) : '—', g && g.ret != null ? signed(g.ret, pct1) : '—'], tones: [null, null, null, null, null, g ? tone(g.growth) : null, g && g.ret != null ? tone(g.ret) : null] });
+      }
+      table([{ label: 'Month', w: 0.18 }, { label: 'Taxable', w: 0.13, align: 'right' }, { label: 'Retirement', w: 0.14, align: 'right' }, { label: 'Total', w: 0.14, align: 'right' }, { label: 'Put in (est.)', w: 0.14, align: 'right' }, { label: 'Market', w: 0.14, align: 'right' }, { label: 'Return', w: 0.13, align: 'right' }], rows);
+    }
+    heading('Account performance');
+    const full = iv.tl, last = full.length - 1, yearFrom = addMonths(curKey, -12);
+    table([{ label: 'Account', w: 0.26 }, { label: 'Type', w: 0.16 }, { label: 'Balance', w: 0.13, align: 'right' }, { label: '1-month', w: 0.13, align: 'right' }, { label: '12-month', w: 0.14, align: 'right' }, { label: 'Market', w: 0.1, align: 'right' }, { label: 'Return', w: 0.08, align: 'right' }],
+      iv.accts.sort((a, b) => (a.group === b.group ? num(b.balance) - num(a.balance) : a.group === 'investment' ? -1 : 1)).map((a) => {
+        let p = -1; for (let k = last - 1; k >= 0; k--) if (full[k].byAcct[a.id] != null) { p = k; break; }
+        const live = last >= 0 && full[last].date === curKey;
+        const g1 = live ? invGrowth(d, full, p, last, a.id) : null;
+        const gy = live ? invGrowth(d, full, invIndexFrom(full, yearFrom, a.id, curKey), last, a.id) : null;
+        return { swatch: a.group === 'retirement' ? PALETTE[2] : PALETTE[0], cells: [a.name, a.kind || '—', money(num(a.balance)), g1 ? sMoney(g1.change) : '—', gy ? sMoney(gy.change) : '—', gy ? sMoney(gy.growth) : '—', gy && gy.ret != null ? signed(gy.ret, pct1) : '—'],
+          tones: [null, null, null, g1 ? tone(g1.change) : null, gy ? tone(gy.change) : null, gy ? tone(gy.growth) : null, gy && gy.ret != null ? tone(gy.ret) : null] };
+      }), { size: 8 });
+    heading('Tax treatment');
+    const cats = {};
+    for (const a of iv.accts) { const c = taxCategoryOf(a); (cats[c] = cats[c] || []).push(a); }
+    const ti2 = taxInfo();
+    const catColor = { taxable: PALETTE[0], crypto: PALETTE[6], deferred: PALETTE[2], roth: PALETTE[5], hsa: PALETTE[4], pension: PALETTE[7], bank: PALETTE[11] };
+    hbars(Object.keys(cats).map((c) => { const v = sum(cats[c], (a) => a.balance); return { label: (ti2[c] || { title: c }).title, frac: iv.total ? v / iv.total : 0, color: catColor[c], text: `${money(v)} (${iv.total ? f.pct(v / iv.total) : '—'})` }; }), { labelW: 160, textW: 120 });
+    table([{ label: 'Treatment', w: 0.28 }, { label: 'How it’s taxed (U.S. federal)', w: 0.72, wrap: true }], Object.keys(cats).map((c) => ({ swatch: catColor[c], cells: [(ti2[c] || { title: c }).title, (ti2[c] || {}).short || ''] })));
+  };
+
+  /* ---------------- spending report */
+  const partSp = () => {
+    const months = Math.max(1, num(opts.months) || 3);
+    const keys = Array.from({ length: months }, (_, i) => addMonths(curKey, -(months - i)));
+    const periodTx = keys.flatMap((k) => txFor(d, k));
+    const spent = sum(periodTx, (x) => x.amount);
+    const budgetTotal = sum(d.categories, (c) => c.budget);
+    const range = `${monthLabel(keys[0], true)} – ${monthLabel(keys[keys.length - 1], true)}`;
+    startPart('spending', 'Spending & savings report', [name ? `Name: ${name}` : null, `Period: ${range} (${months} full month${months === 1 ? '' : 's'})`, `Created ${todayLong} · debit and credit card spending`],
+      'Spending & savings report · from your transactions', range);
+    toc.push({ title: 'Spending & savings', part, pageObj: pdf.page });
+    heading('Summary');
+    const debit = sum(periodTx.filter((x) => x.source === 'debit'), (x) => x.amount), credit = spent - debit;
+    const cats = byCategory(periodTx);
+    const incAvg = sum(keys, (k) => monthlyIncome(d, k).net) / months;
+    tiles([
+      { label: 'Total spending', value: money(spent), sub: `${periodTx.length} transactions` },
+      { label: 'Monthly average', value: money(spent / months), sub: budgetTotal ? `budget ${money(budgetTotal)}/mo` : 'no budgets set', color: budgetTotal ? (spent / months > budgetTotal ? BAD : GOOD) : null },
+      { label: 'Debit / credit', value: `${f.compact(debit)} / ${f.compact(credit)}`, sub: spent ? `${f.pct(credit / spent)} on credit cards` : '' },
+      { label: 'Top category', value: cats[0] ? cats[0].name : '—', sub: cats[0] ? `${money(cats[0].total)} · ${f.pct(cats[0].total / (spent || 1))}` : '' },
+      { label: 'Take-home (avg)', value: incAvg ? `${money(incAvg)}/mo` : '—', sub: 'guaranteed income' },
+      { label: 'Savings rate (avg)', value: incAvg ? f.pct((incAvg - spent / months) / incAvg) : '—', sub: incAvg ? `${money(incAvg - spent / months)}/mo left` : '', color: incAvg ? tone(incAvg - spent / months) : null },
+    ]);
+    heading('Spending by month', { keep: 230 });
+    columnChart(keys.map((k) => monthLabel(k)), [
+      { name: 'Debit', color: DEBIT_COLOR, values: keys.map((k) => sum(txFor(d, k, 'debit'), (x) => x.amount)) },
+      { name: 'Credit', color: CREDIT_COLOR, values: keys.map((k) => sum(txFor(d, k, 'credit'), (x) => x.amount)) },
+    ], { ref: budgetTotal || null, refLabel: `Line: monthly budget ${money(budgetTotal)}`, valueLabels: true, height: 170 });
+    heading('Spending by category');
+    para(`Share of spending over the period. Monthly budgets are compared with the average per month.`);
+    const maxCat = cats[0] ? cats[0].total : 1;
+    hbars(cats.slice(0, 12).map((c, i) => ({ label: c.name, frac: c.total / maxCat, color: PALETTE[i % PALETTE.length], text: `${money(c.total)} (${f.pct(c.total / (spent || 1))})` })), { labelW: 130, textW: 120 });
+    table([{ label: 'Category', w: 0.26 }, { label: 'Total', w: 0.14, align: 'right' }, { label: 'Per month', w: 0.14, align: 'right' }, { label: 'Budget / mo', w: 0.14, align: 'right' }, { label: 'vs budget', w: 0.16, align: 'right' }, { label: 'Transactions', w: 0.16, align: 'right' }],
+      cats.map((c, i) => { const b = budgetFor(d, c.name), pm = c.total / months; return { swatch: PALETTE[i % PALETTE.length], cells: [c.name, money(c.total), money(pm), b ? money(b) : '—', b ? `${pm > b ? 'over ' : 'under '}${money(Math.abs(b - pm))}` : '—', String(c.count)], tones: [null, null, null, null, b ? (pm > b ? BAD : GOOD) : null] }; }));
+    if (d.goals.length) {
+      heading('Savings goals');
+      table([{ label: 'Goal', w: 0.26 }, { label: 'Saved', w: 0.13, align: 'right' }, { label: 'Target', w: 0.13, align: 'right' }, { label: 'Progress', w: 0.11, align: 'right' }, { label: 'Deadline', w: 0.14 }, { label: 'Needed / mo', w: 0.12, align: 'right' }, { label: 'Status', w: 0.11 }],
+        d.goals.map((g) => { const i = goalInfo(g); const st = i.done ? 'Done' : i.onPace === false ? 'Behind' : i.onPace ? 'On pace' : '—'; return { cells: [g.name, money(i.saved), money(i.target), f.pct(i.progress), g.deadline ? dateLabel(g.deadline) : '—', i.done ? '—' : i.monthly != null ? money(i.monthly) : '—', st], tones: [null, null, null, null, null, null, st === 'Behind' ? BAD : st === 'Done' || st === 'On pace' ? GOOD : null] }; }));
+    }
+    if (opts.transactions) {
+      heading('Transactions');
+      const txs = [...periodTx].sort((a, b) => a.date.localeCompare(b.date));
+      table([{ label: 'Date', w: 0.13 }, { label: 'Description', w: 0.27, wrap: true }, { label: 'Category', w: 0.15 }, { label: 'Paid with', w: 0.14 }, { label: 'Amount', w: 0.11, align: 'right' }, { label: 'Note', w: 0.2, wrap: true }],
+        txs.map((x) => ({ cells: [dateLabel(x.date), x.desc, x.category, x.source === 'credit' ? (x.card || 'Credit') : 'Debit', f.cents(x.amount), x.note || ''] })), { size: 7.8 });
+    }
+  };
+
+  run({ retirement: partRet, networth: partNW, investments: partInv, spending: partSp });
+
+  /* ---------------- appendix */
+  startPart('appendix', 'Appendix: how this report was calculated', ['The methods, settings and limits behind the figures in this report, with sources. Numbers in brackets refer to the references at the end.'],
+    'Finance report · appendix · predictions, not financial advice');
+  toc.push({ title: 'Appendix: methods & references', part, pageObj: pdf.page });
+  const settingsBox = (text) => callout(`Settings used in this report: ${text}`);
+  const apxRet = () => {
+    heading('Retirement', { color: ACC.retirement });
+    bullets([
+      'Target nest egg = (desired yearly income − Social Security/pension) ÷ withdrawal rate.',
+      `Real return = (1 + expected return) ÷ (1 + inflation) − 1 = ${pct1(plan.real)} a year, so every amount is in today’s dollars and the target doesn’t grow over time.`,
+      'Projection: each month every retirement account grows by the monthly real return and its yearly contribution ÷ 12 is added.',
+      'Estimated retirement = the first month the projected balance reaches the target. Status compares the projection at your target age with the target: on track at 100% or more, slightly behind at 85–99%, off track below 85%.',
+      'Money lasts until: from the target age, the yearly need (desired income − other income) is withdrawn monthly at the same real return until savings run out. “100+” means beyond age 100.',
+      'Needed contribution = the yearly contribution that makes the projection reach the target exactly at the target age.',
+      `Contribution limits are the ${taxYear()} IRS limits (${taxAsOf()}), including catch-up amounts for your age.`,
+      'Not modeled: taxes on withdrawals, fees beyond what your expected return assumes, year-to-year market swings (sequence-of-returns risk) and changes to Social Security.',
+    ]);
+    settingsBox(`retire at ${plan.targetAge}; desired income ${money(num(r.annualIncome))}/yr; other income ${money(num(r.otherIncome))}/yr; withdrawal rate ${num(r.withdrawalRate)}%; return ${num(r.expectedReturn)}%; inflation ${num(r.inflation)}%; taxable investments ${r.includeInvestments ? 'counted' : 'not counted'}. Sources: ${cite(['trinity', 'cooley', 'bengen', 'morningstar', 'fisher', 'damodaran', 'cpi', 'fees', 'compound', 'savingsGoal', 'ssaEstimate', 'ssaDelay', 'irsLimits'])}`);
+    heading('Income', { color: ACC.retirement });
+    bullets([
+      'Income is a guaranteed amount per month (gross before taxes and deductions; net is take-home). Amounts entered per year or per paycheck are converted to monthly.',
+      'A change stays in effect until the next one. Additional income counts from its start date to its end date (if any); when no net amount was entered, net equals gross.',
+      'Left after spending = monthly take-home − average spending over the last three full months. Savings rate = what’s left ÷ take-home.',
+    ]);
+  };
+  const apxNW = () => {
+    heading('Net worth', { color: ACC.networth });
+    bullets([
+      'Net worth = total assets − total debts, using balances as you last entered them; property values are your own estimates. Balances are before tax.',
+      'Monthly snapshots are saved when balances are updated; past months can be added or edited. 12-month change compares with the snapshot from the same month last year.',
+      'Debt-to-asset = debts ÷ assets. Emergency cushion = on-budget cash ÷ average monthly spending over the last three full months.',
+      'Credit score bands: Poor under 580, Fair 580–669, Good 670–739, Very good 740–799, Exceptional 800+.',
+      'Tax notes are general U.S. federal rules and are not tax advice.',
+    ]);
+    settingsBox(`${nw.hist.length} snapshots; ${d.accounts.length} accounts; U.S. tax rules ${taxAsOf()}. Sources: ${cite(['cfpbCredit', 'myfico', 'cfpbEmergency', 'tc403', 'tc404', 'tc409', 'pub590b', 'irsIndex'])}`);
+  };
+  const apxInv = () => {
+    heading('Investments', { color: ACC.investments });
+    bullets([
+      'Total invested = taxable investment accounts + retirement accounts. Each account’s balance is saved every month it’s updated, or entered later as a past balance.',
+      'Money put in (estimated) = each account’s yearly contribution ÷ 12 for every month, plus the balance of accounts opened or rolled in during the period, minus accounts closed.',
+      'Market growth = ending balance − starting balance − money put in. It includes interest, dividends and price changes after fund fees.',
+      'Estimated return uses the Modified Dietz method: market growth ÷ (starting balance + ½ × money put in). It’s an estimate that assumes deposits arrived evenly, and it isn’t annualized unless the period is 12 months.',
+      'TOD Individual accounts are taxed like other brokerage accounts; rollover IRAs are taxed like traditional IRAs.',
+    ]);
+    settingsBox(`contribution estimate ${iv.est ? 'on' : 'off'}; ${iv.months} months of account history. Sources: ${cite(['dietz', 'compound', 'fees', 'finraTod', 'irsRollover', 'tc413'])}`);
+  };
+  const apxSp = () => {
+    heading('Spending & savings', { color: ACC.spending });
+    bullets([
+      'Spending is the sum of debit and credit card transactions in each calendar month; deposits and income rows aren’t counted.',
+      'Per month = total for the period ÷ number of full months. Budgets are monthly and compared with that average.',
+      'Savings goals: needed per month = amount remaining ÷ months until the deadline. A goal is behind pace when the share saved is more than 5 points below the share of time elapsed.',
+    ]);
+    settingsBox(`${num(opts.months) || 3} full months; ${d.categories.filter((c) => c.budget).length} categories with budgets. Sources: ${cite(['cfpbEmergency'])}`);
+  };
+  run({ retirement: apxRet, networth: apxNW, investments: apxInv, spending: apxSp });
+  heading('References', { color: ACC.appendix });
+  refs.forEach((k, i) => {
+    const s = SOURCES[k];
+    const lines = pdf.wrap(`${i + 1}. ${s.by}. ${s.title}.`, W, 8.5);
+    ensure(lines.length * 12 + 14);
+    lines.forEach((ln) => { pdf.text(M, y + 8.5, ln, { size: 8.5, color: INK }); y += 12; });
+    const u = pdf.fit(s.url, W - 12, 7.2);
+    pdf.text(M + 12, y + 7, u, { size: 7.2, color: '#0969da' });
+    pdf.link(M + 12, y - 1, pdf.width(u, 7.2), 10, s.url);
+    y += 14;
+  });
+  y += 6;
+  {
+    const disc = 'This report was produced by Finance Dashboard, a personal record-keeping tool for Obsidian. Figures come from the balances, income and transactions you entered and may be incomplete. Retirement and growth figures are predictions based on your assumptions, not guarantees. Tax notes describe general U.S. federal rules. This report is for planning and education and is not financial, investment, tax or legal advice; consider a qualified professional before making decisions.';
+    const lines = pdf.wrap(disc, W - 28, 8.5);
+    const h = lines.length * 12 + 30;
+    ensure(h);
+    pdf.rect(M, y, W, h, { fill: SOFT });
+    pdf.text(M + 14, y + 17, 'Disclaimer', { size: 9.5, bold: true, color: INK });
+    lines.forEach((ln, i) => pdf.text(M + 14, y + 31 + i * 12, ln, { size: 8.5, color: MUTED }));
+    y += h;
+  }
+
+  /* ---------------- contents, footers */
+  const pageNo = (pg) => pdf.pages.indexOf(pg) + 1;
+  pdf.page = tocPage;
+  {
+    let ty = tocY;
+    pdf.rect(M, ty, W, 18, { fill: SOFT });
+    pdf.text(M + 6, ty + 12, 'Section', { size: 7.8, bold: true, color: MUTED });
+    pdf.text(M + W - 6, ty + 12, 'Page', { size: 7.8, bold: true, color: MUTED, align: 'right' });
+    ty += 18;
+    for (const e of toc) {
+      pdf.rect(M + 6, ty + 5, 7, 7, { fill: e.part.color });
+      pdf.text(M + 19, ty + 11.5, e.title, { size: 9, color: INK });
+      pdf.text(M + W - 6, ty + 11.5, String(pageNo(e.pageObj)), { size: 9, color: INK, align: 'right' });
+      ty += 17;
+      pdf.line(M, ty, M + W, ty, { color: LINE, width: 0.45 });
+    }
+  }
+  for (const p of parts) {
+    p.pages.forEach((pg, i) => {
+      pdf.page = pg;
+      pdf.text(M, pdf.H - 30, pdf.fit(p.footer, W - 80, 7.5), { size: 7.5, color: FAINT });
+      pdf.text(M + W, pdf.H - 30, `Page ${i + 1} of ${p.pages.length}`, { size: 7.5, color: FAINT, align: 'right' });
+    });
+  }
+  return pdf.output();
 }
 
 /* ========================================================== tax rules (U.S.) */
@@ -3092,7 +3920,7 @@ class NetWorthInfoModal extends Modal {
     noticeBox(s2, 'General U.S. federal rules, not tax advice.', 'Your situation, state taxes and future law changes can differ, and other countries tax these accounts differently. Check the linked IRS pages or a tax professional before acting.', 'info');
     s2.createDiv({ cls: 'fd-muted fd-info-intro', text: 'Your net worth counts balances before tax. Here’s what that means for each kind of account you have — yours are listed on each card.' });
     const R = taxR();
-    const inc = incomeOn(d, todayISO()).cur, grossYear = inc ? num(inc.gross) * 12 : 0;
+    const grossYear = totalIncomeOn(d, todayISO()).gross * 12;
     // Estimated bracket from this year's brackets and your income
     const est = s2.createDiv({ cls: 'fd-tax-illus' });
     est.createDiv({ cls: 'fd-tax-illus-title', text: `Your estimated ${taxYear()} federal tax picture` });
@@ -3748,6 +4576,7 @@ class Dashboard {
     this.button(actions, 'plus', 'Transaction', () => this.plugin.addTransaction());
     this.button(actions, 'refresh-cw', 'Update balances', () => this.plugin.updateBalances());
     this.button(actions, 'upload', 'Import CSV', () => new ImportModal(this.app, this.plugin).open());
+    this.button(actions, 'file-down', 'PDF report', () => this.plugin.createReport());
     const gear = this.iconButton(actions, 'settings', 'Manage accounts & assets', () => this.plugin.manageAccounts());
     gear.addClass('fd-gear');
     const nav = this.el.createDiv({ cls: 'fd-tabs', attr: { role: 'tablist' } });
@@ -3944,8 +4773,11 @@ class Dashboard {
     const view = ['net', 'gross', 'both'].includes(d.settings.incomeView) ? d.settings.incomeView : 'net';
     const today = todayISO();
     const { cur, prev, upcoming, hist } = incomeOn(d, today);
+    const tot = totalIncomeOn(d, today);
+    const extrasAll = d.extraIncome || [];
+    const jobSub = cur ? [cur.title, cur.employer].filter(Boolean).join(' · ') : '';
     const card = this.card(grid, 'Income', { span: 2,
-      sub: cur ? [cur.title, cur.employer].filter(Boolean).join(' · ') || 'Guaranteed monthly income' : 'Guaranteed monthly income',
+      sub: (jobSub || 'Guaranteed monthly income') + (tot.extras.length ? ` + ${tot.extras.length} other source${tot.extras.length === 1 ? '' : 's'}` : ''),
       tools: (tl) => {
         const seg = tl.createDiv({ cls: 'fd-seg' });
         for (const [v, l] of [['net', 'Net'], ['gross', 'Gross'], ['both', 'Both']]) {
@@ -3953,13 +4785,15 @@ class Dashboard {
           b.addEventListener('click', async () => { d.settings.incomeView = v; await this.plugin.save(); this.plugin.refresh(); });
         }
         this.button(tl, 'trending-up', cur ? 'Update income' : 'Set up income', () => this.plugin.editIncome());
-        if (hist.length) this.iconButton(tl, 'history', 'Income history', () => this.plugin.manageIncome());
+        this.button(tl, 'plus', 'Add income', () => this.plugin.editExtraIncome());
+        if (hist.length || extrasAll.length) this.iconButton(tl, 'history', 'Income history & sources', () => this.plugin.manageIncome());
       } });
-    if (!cur) {
-      emptyState(card, upcoming ? `Income starts ${dateLabel(upcoming.date)}.` : 'Set your monthly income (gross and take-home) to see it here. Update it any time you get a raise or change jobs.');
+    if (!cur && !tot.extras.length) {
+      emptyState(card, upcoming ? `Income starts ${dateLabel(upcoming.date)}.` : 'Set your monthly income (gross and take-home) to see it here. Update it any time you get a raise or change jobs, and use “Add income” for side jobs, rental income and other sources.');
       return;
     }
-    const G = num(cur.gross), N = num(cur.net), D = Math.max(0, G - N);
+    const G = tot.gross, N = tot.net, D = Math.max(0, G - N);
+    const multi = tot.extras.length > 0;
     const figs = card.createDiv({ cls: 'fd-income-figs' });
     const fig = (label, value, sub, cls) => {
       const el = figs.createDiv({ cls: 'fd-income-fig' + (cls ? ' ' + cls : '') });
@@ -3972,23 +4806,43 @@ class Dashboard {
     const avgSpend = sum([1, 2, 3].map((i) => sum(txFor(d, addMonths(curKey, -i)), (x) => x.amount))) / 3;
     const left = N - avgSpend;
     if (view === 'net') {
-      fig('Monthly take-home', f.money(N), 'Guaranteed each month', 'is-primary');
+      fig('Monthly take-home', f.money(N), multi ? `${tot.extras.length + (cur ? 1 : 0)} sources · guaranteed each month` : 'Guaranteed each month', 'is-primary');
       fig('Per year', f.money(N * 12));
       fig('Taxes & deductions', `${f.money(D)}/mo`, G ? `${f.pct(D / G)} of gross` : '');
       fig('Left after spending', avgSpend ? f.money(left) : '—', avgSpend ? `${f.pct(left / N)} savings rate · avg spend ${f.money(avgSpend)}` : 'No spending history yet', left >= 0 ? 'is-good' : 'is-bad');
     } else if (view === 'gross') {
-      fig('Monthly gross', f.money(G), 'Before taxes & deductions', 'is-primary');
+      fig('Monthly gross', f.money(G), multi ? `${tot.extras.length + (cur ? 1 : 0)} sources · before taxes & deductions` : 'Before taxes & deductions', 'is-primary');
       fig('Per year', f.money(G * 12));
       fig('Taxes & deductions', `${f.money(D)}/mo`, `${f.money(D * 12)}/yr`);
       fig('Take-home rate', G ? f.pct(N / G) : '—', `${f.money(N)}/mo net`);
     } else {
-      fig('Monthly gross → net', `${f.money(G)} → ${f.money(N)}`, 'Guaranteed each month', 'is-primary is-wide');
+      fig('Monthly gross → net', `${f.money(G)} → ${f.money(N)}`, multi ? `${tot.extras.length + (cur ? 1 : 0)} sources · guaranteed each month` : 'Guaranteed each month', 'is-primary is-wide');
       fig('Per year', `${f.compact(G * 12)} → ${f.compact(N * 12)}`);
       fig('Deductions', G ? f.pct(D / G) : '—', `${f.money(D)}/mo`);
     }
-    // Last change (raise / new job) and any upcoming one
+    // Income sources: the job plus each additional source (shown once there's more than one)
     const amt = (h) => (view === 'gross' ? num(h.gross) : num(h.net));
     const lbl = view === 'gross' ? 'gross' : 'net';
+    const showExtras = extrasAll.filter((x) => !x.end || x.end >= today);
+    if (showExtras.length) {
+      const list = card.createDiv({ cls: 'fd-income-sources' });
+      const row = (name, meta, value, onClick, cls) => {
+        const r = list.createDiv({ cls: 'fd-income-source' + (onClick ? ' is-clickable' : '') + (cls ? ' ' + cls : ''), attr: onClick ? { role: 'button', tabindex: '0' } : {} });
+        const l = r.createDiv({ cls: 'fd-income-source-name' });
+        l.createSpan({ text: name });
+        if (meta) l.createSpan({ cls: 'fd-muted', text: ` · ${meta}` });
+        r.createDiv({ cls: 'fd-income-source-val', text: value });
+        if (onClick && !this.embedded) { r.addEventListener('click', onClick); r.addEventListener('keydown', (e) => { if (e.key === 'Enter') onClick(); }); }
+      };
+      const both = (x) => (view === 'both' ? `${f.money(num(x.gross))} → ${f.money(num(x.net))}/mo` : `${f.money(amt(x))}/mo`);
+      if (cur) row(jobSub || 'Job', 'Job', both(cur), () => this.plugin.editIncome());
+      for (const x of showExtras) {
+        const future = x.start && x.start > today;
+        row(x.name || x.kind || 'Income', [x.kind, future ? `starts ${dateLabel(x.start)}` : x.end ? `until ${dateLabel(x.end)}` : ''].filter(Boolean).join(' · '), both(x), () => this.plugin.editExtraIncome(x), future ? 'is-upcoming' : '');
+      }
+    }
+    // Last change (raise / new job) and any upcoming one
+    if (!cur) return;
     if (prev) {
       const dv = amt(cur) - amt(prev);
       const c = card.createDiv({ cls: 'fd-income-change' });
@@ -4593,7 +5447,8 @@ class Dashboard {
     const info = this.iconButton(ra, 'circle-help', 'How your retirement projection is calculated', () => this.plugin.openRetirementInfo());
     info.addClass('fd-info-btn');
     info.setAttr('title', 'How is this calculated?');
-    predictionNote(body, true);
+    // Prediction disclaimer on its own row at the very top of the page.
+    body.insertBefore(predictionNote(body, true), bar);
 
     const kpis = body.createDiv({ cls: 'fd-kpis' });
     this.kpi(kpis, 'Retirement savings', f.money(plan.balance), { icon: 'piggy-bank', sub: `${f.money(plan.contribution)}/yr contributions`, help: 'contributions' });
@@ -4747,7 +5602,7 @@ function taxBucket(kind) {
   if (k.includes('hsa')) return 'Triple tax-advantaged (HSA)';
   if (k.includes('pension')) return 'Pension';
   if (/401|403|457|traditional|sep|simple|ira/.test(k)) return 'Tax-deferred';
-  if (/brokerage|stock|bond|crypto|cd/.test(k)) return 'Taxable';
+  if (/brokerage|stock|bond|crypto|cd|tod|etf|fund|individual/.test(k)) return 'Taxable';
   return 'Other';
 }
 function statusColor(s) { return s === 'on-track' ? 'var(--color-green)' : s === 'close' ? 'var(--color-orange)' : 'var(--color-red)'; }
@@ -4799,7 +5654,9 @@ function insights(d, f, plan) {
     out.push({ tone: months >= 6 ? 'good' : months >= 3 ? 'info' : 'bad', text: `Cash covers about ${months.toFixed(1)} months of recent spending (${f.money(avgSpend)}/mo average).` });
   }
   if (!out.length) out.push({ tone: 'info', text: 'Add accounts, transactions and goals to see insights here.' });
-  return out;
+  // Problems first, then things to watch, then good news (order within each kept).
+  const rank = { bad: 0, info: 1, good: 2 };
+  return out.map((x, i) => [x, i]).sort((a, b) => (rank[a[0].tone] - rank[b[0].tone]) || a[1] - b[1]).map((p) => p[0]);
 }
 
 /* -------------------------------------------------------------- the view */
@@ -4845,11 +5702,13 @@ module.exports = class FinanceDashboardPlugin extends Plugin {
     this.addCommand({ id: 'add-transaction', name: 'Add transaction', callback: () => this.addTransaction() });
     this.addCommand({ id: 'update-income', name: 'Update income (raise, promotion or new job)', callback: () => this.editIncome() });
     this.addCommand({ id: 'income-history', name: 'Income history', callback: () => this.manageIncome() });
+    this.addCommand({ id: 'add-income', name: 'Add additional income (side job, rental…)', callback: () => this.editExtraIncome() });
     this.addCommand({ id: 'add-note', name: 'Add note', callback: () => this.editBalanceNote() });
     this.addCommand({ id: 'update-balances', name: 'Update account balances', callback: () => this.updateBalances() });
     this.addCommand({ id: 'add-credit-score', name: 'Add credit score', callback: () => this.editCredit() });
     this.addCommand({ id: 'add-account', name: 'Add account', callback: () => this.editAccount() });
     this.addCommand({ id: 'manage-accounts', name: 'Manage accounts & assets', callback: () => this.manageAccounts() });
+    this.addCommand({ id: 'pdf-report', name: 'Create PDF report', callback: () => this.createReport() });
     this.addCommand({ id: 'what-if', name: 'Retirement: What-if planner', callback: () => this.openWhatIf() });
     this.addCommand({ id: 'retirement-info', name: 'Retirement: How the projection is calculated', callback: () => this.openRetirementInfo() });
     this.addCommand({ id: 'networth-info', name: 'Net worth: How it’s calculated and how accounts are taxed', callback: () => this.openNetWorthInfo() });
@@ -4912,6 +5771,7 @@ module.exports = class FinanceDashboardPlugin extends Plugin {
     this.data.settings = Object.assign(defaultData().settings, saved.settings || {});
     this.data.settings.link = Object.assign(defaultData().settings.link, (saved.settings && saved.settings.link) || {});
     this.data.settings.invest = Object.assign(defaultData().settings.invest, (saved.settings && saved.settings.invest) || {});
+    this.data.settings.report = Object.assign(defaultData().settings.report, (saved.settings && saved.settings.report) || {});
     if (!this.data.invHistory || typeof this.data.invHistory !== 'object' || Array.isArray(this.data.invHistory)) this.data.invHistory = {};
     if (!this.data.invMeta || typeof this.data.invMeta !== 'object') this.data.invMeta = {};
     if (!this.data.cashHistory || typeof this.data.cashHistory !== 'object' || Array.isArray(this.data.cashHistory)) this.data.cashHistory = {};
@@ -4924,6 +5784,7 @@ module.exports = class FinanceDashboardPlugin extends Plugin {
     }
     this.data.retirement = Object.assign(defaultData().retirement, saved.retirement || {});
     if (!Array.isArray(this.data.incomeHistory)) this.data.incomeHistory = [];
+    if (!Array.isArray(this.data.extraIncome)) this.data.extraIncome = [];
     if (!Array.isArray(this.data.balanceNotes)) this.data.balanceNotes = [];
     if (!this.data.whatIf || !Array.isArray(this.data.whatIf.scenarios)) this.data.whatIf = { scenarios: [], selected: 'base' };
     if (!this.data.retirementNotes || typeof this.data.retirementNotes !== 'object') this.data.retirementNotes = { text: '', updated: null };
@@ -5098,6 +5959,9 @@ module.exports = class FinanceDashboardPlugin extends Plugin {
   }
 
   manageAccounts() { new AccountsModal(this.app, this).open(); }
+
+  /** Ask what to include, then save the finance report PDF to the "Finance Dashboard" folder. */
+  createReport() { new ReportModal(this.app, this).open(); }
 
   openWhatIf(opts) { new WhatIfModal(this.app, this, opts).open(); }
   openNetWorthInfo() { new NetWorthInfoModal(this.app, this).open(); }
@@ -5337,19 +6201,34 @@ module.exports = class FinanceDashboardPlugin extends Plugin {
       fields.push({ type: 'heading', label: ACCOUNT_GROUPS[g] });
       for (const a of list) fields.push({ key: a.id, label: a.name + (a.kind ? ` (${a.kind})` : ''), type: 'number', half: true });
     }
+    const credit = [...(this.data.credit || [])].sort((a, b) => a.date.localeCompare(b.date));
+    const lastScore = credit[credit.length - 1];
+    fields.push({ type: 'heading', label: 'Credit score' });
+    fields.push({ key: '__score', label: 'Today’s score (optional)', type: 'number', optional: true, half: true, placeholder: '300–850',
+      desc: lastScore ? `Last: ${lastScore.score} on ${dateLabel(lastScore.date)}${lastScore.bureau ? ` (${lastScore.bureau})` : ''}.` : 'Adds a point to your credit score trend.' });
+    fields.push({ key: '__bureau', label: 'Source', half: true, suggestions: ['Equifax', 'Experian', 'TransUnion', 'FICO', 'VantageScore'], placeholder: 'e.g. Experian' });
     fields.push({ type: 'heading', label: 'Note' });
     fields.push({ key: '__note', label: 'What changed this time? (optional)', type: 'textarea', placeholder: 'e.g. Bonus invested, paid off the car loan, market dip…',
       desc: `Saved with today’s date and shown in ${monthLabel(monthKey(new Date()), true)}’s notes and on the net-worth chart.` });
-    const values = {};
+    const values = { __bureau: lastScore && lastScore.bureau ? lastScore.bureau : '' };
     accts.forEach((a) => { values[a.id] = Math.abs(num(a.balance)); });
     new FormModal(this.app, {
       title: 'Update balances',
-      intro: `Saving records this month’s net-worth snapshot (${monthLabel(monthKey(new Date()), true)}).`,
+      intro: `Saving records this month’s net-worth snapshot (${monthLabel(monthKey(new Date()), true)}). You can add today’s credit score too.`,
       fields, values,
-      onSubmit: (v) => this.mutate((d) => {
-        for (const a of d.accounts) if (v[a.id] != null) a.balance = Math.abs(v[a.id]);
-        if (v.__note) (d.balanceNotes = d.balanceNotes || []).push({ id: uid(), date: todayISO(), text: v.__note });
-      }).then(() => new Notice(v.__note ? 'Balances and note saved.' : 'Balances updated.')),
+      onSubmit: (v) => {
+        if (v.__score != null && (v.__score < 300 || v.__score > 850)) throw new Error('Credit score should be between 300 and 850.');
+        return this.mutate((d) => {
+          for (const a of d.accounts) if (v[a.id] != null) a.balance = Math.abs(v[a.id]);
+          if (v.__note) (d.balanceNotes = d.balanceNotes || []).push({ id: uid(), date: todayISO(), text: v.__note });
+          if (v.__score != null) {
+            // One score per day: today's entry is replaced if you update twice.
+            const rec = { date: todayISO(), score: Math.round(v.__score), bureau: (v.__bureau || '').trim() };
+            const same = (d.credit = d.credit || []).find((c) => c.date === rec.date && (c.bureau || '') === rec.bureau);
+            if (same) Object.assign(same, rec); else d.credit.push(Object.assign({ id: uid() }, rec));
+          }
+        }).then(() => new Notice(['Balances', v.__score != null ? 'credit score' : null, v.__note ? 'note' : null].filter(Boolean).join(', ').replace(/, ([^,]*)$/, ' and $1') + ' saved.'));
+      },
     }).open();
   }
 
@@ -5428,6 +6307,50 @@ module.exports = class FinanceDashboardPlugin extends Plugin {
   }
 
   manageIncome() { new IncomeModal(this.app, this).open(); }
+
+  /** Add or edit an additional income source (side job, rental, pension…), counted every month it's active. */
+  editExtraIncome(x) {
+    const editing = x && x.id;
+    const round2 = (v) => Math.round(v * 100) / 100;
+    const k = (per) => (per === 'year' ? 1 / 12 : 1);
+    let lastPer = 'month';
+    new FormModal(this.app, {
+      title: editing ? 'Edit income source' : 'Add income',
+      intro: 'Additional income on top of your job, such as a side job, rental income or a pension. It’s added to your monthly income from the start date until the end date (if any).',
+      values: editing ? { ...x, per: 'month', gross: round2(num(x.gross)), net: round2(num(x.net)) } : { kind: 'Side job', per: 'month', start: todayISO() },
+      fields: [
+        { key: 'name', label: 'Name', required: true, placeholder: 'e.g. Weekend photography, Duplex rent', half: true },
+        { key: 'kind', label: 'Type', type: 'select', options: EXTRA_KINDS, half: true },
+        { key: 'per', label: 'Amounts are', type: 'select', options: [{ value: 'month', label: 'Per month (default)' }, { value: 'year', label: 'Per year' }] },
+        { key: 'gross', label: 'Gross per month', type: 'number', required: true, half: true, labelFor: (v) => `Gross per ${v.per === 'year' ? 'year' : 'month'}` },
+        { key: 'net', label: 'Net (after tax) per month', type: 'number', optional: true, half: true, labelFor: (v) => `Net (after tax) per ${v.per === 'year' ? 'year' : 'month'}`,
+          desc: 'Leave blank if no tax is taken out — net then equals gross. Set aside for taxes yourself if needed.' },
+        { key: 'start', label: 'Starts', type: 'date', required: true, half: true },
+        { key: 'end', label: 'Ends (optional)', type: 'date', half: true, desc: 'Leave blank if it continues.' },
+        { key: 'note', label: 'Note (optional)', type: 'textarea', placeholder: 'e.g. Lease renews in June' },
+      ],
+      onChange: (key, v, set) => {
+        if (key !== 'per') return;
+        for (const fld of ['gross', 'net']) if (String(v[fld]).trim() !== '') set(fld, round2(num(v[fld]) * k(lastPer) / k(v.per)));
+        lastPer = v.per;
+      },
+      onDelete: editing ? () => this.mutate((d) => { d.extraIncome = (d.extraIncome || []).filter((y) => y.id !== x.id); }).then(() => new Notice('Income source deleted.')) : null,
+      submitText: editing ? 'Save' : 'Add income',
+      onSubmit: (v) => {
+        const gross = round2(Math.abs(v.gross) * k(v.per));
+        const net = v.net == null ? gross : round2(Math.abs(v.net) * k(v.per));
+        if (!gross) throw new Error('Enter how much it pays.');
+        if (net > gross) throw new Error('Net can’t be more than gross.');
+        if (v.end && v.end < v.start) throw new Error('The end date is before the start date.');
+        const rec = { name: v.name, kind: v.kind, gross, net, start: v.start, end: v.end || null, note: v.note || '' };
+        return this.mutate((d) => {
+          d.extraIncome = d.extraIncome || [];
+          if (editing) Object.assign(d.extraIncome.find((y) => y.id === x.id), rec);
+          else d.extraIncome.push(Object.assign({ id: uid() }, rec));
+        }).then(() => new Notice(editing ? 'Income source saved.' : `${v.name} added to your income.`));
+      },
+    }).open();
+  }
 
   editBalanceNote(n) {
     const editing = n && n.id;
@@ -5827,6 +6750,8 @@ class FinanceSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     const p = this.plugin;
     containerEl.empty();
+    new Setting(containerEl).setName('Your name').setDesc('Shown on PDF reports. You can still change it for a single report when you create one.')
+      .addText((t) => t.setPlaceholder('e.g. Alex Rivera').setValue(p.data.settings.report.name || '').onChange(async (v) => { p.data.settings.report.name = v.trim(); await p.save(); }));
     new Setting(containerEl).setName('Currency').setDesc('ISO code, e.g. USD, EUR, GBP, ISK.')
       .addText((t) => t.setValue(p.data.settings.currency).onChange(async (v) => { p.data.settings.currency = v.trim().toUpperCase() || 'USD'; await p.save(); p.refresh(); }));
     new Setting(containerEl).setName('Number locale').setDesc('Optional, e.g. en-US or de-DE. Blank uses your system setting.')
@@ -5930,7 +6855,7 @@ function sampleData() {
   let score = 704;
   for (let i = 23; i >= 0; i--) {
     score = clamp(Math.round(score + between(-6, 9)), 640, 812);
-    d.credit.push({ id: uid(), date: `${addMonths(now, -i)}-${pad2(14)}`, score, bureau: 'VantageScore' });
+    d.credit.push({ id: uid(), date: `${addMonths(now, -i)}-${pad2(i === 0 ? Math.min(14, new Date().getDate()) : 14)}`, score, bureau: 'VantageScore' });
   }
   d.categories = [['Housing', 2250], ['Groceries', 650], ['Dining', 350], ['Transportation', 250], ['Utilities', 260], ['Insurance', 210], ['Health', 120],
     ['Shopping', 300], ['Entertainment', 120], ['Subscriptions', 80], ['Travel', 200], ['Personal care', 60], ['Gifts & donations', 120], ['Other', 100]].map(([name, budget]) => ({ name, budget }));
@@ -5982,6 +6907,9 @@ function sampleData() {
     { id: uid(), date: monthsAgo(15, 19), reason: 'New job', employer: 'Brightline Health', title: 'Senior product designer', gross: 9583.33, net: 6766.67, note: 'Switched jobs — better 401(k) match' },
     { id: uid(), date: monthsAgo(4), reason: 'Raise', employer: 'Brightline Health', title: 'Senior product designer', gross: 9966.67, net: 7025, note: 'Annual review: 4% raise, bumped 401(k) to 10%' },
   ];
+  d.extraIncome = [
+    { id: uid(), name: 'Freelance illustration', kind: 'Freelance / gig work', gross: 650, net: 500, start: monthsAgo(8, 1), end: null, note: 'About two small projects a month' },
+  ];
   // Notes on a few transactions
   const noteFirst = (pred, text) => { const t = d.transactions.find(pred); if (t) t.note = text; };
   noteFirst((t) => t.category === 'Travel', 'Japan trip — flights booked early with rewards card');
@@ -6006,4 +6934,4 @@ function sampleData() {
 }
 
 // Exposed for testing outside Obsidian.
-module.exports.__test = { simulateRetirement, buildWhatIfPDF, MiniPDF, retirementPlan, totals, byCategory, goalInfo, parseCSV, importTransactions, sampleData, Dashboard, defaultData };
+module.exports.__test = { simulateRetirement, buildWhatIfPDF, buildFinanceReport, MiniPDF, retirementPlan, totals, byCategory, goalInfo, parseCSV, importTransactions, sampleData, Dashboard, defaultData };

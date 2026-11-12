@@ -24,7 +24,7 @@ BRAT checks this repository for new releases and can update the plugin for you.
 
 | Page | What it shows |
 |---|---|
-| **Overview** | Headline numbers from every page (net worth, credit score, month spending vs budget, retirement status), a 12-month net-worth chart, spending donut, savings-goal progress, retirement progress ring, an **Income** card with a **Net / Gross / Both** toggle, this month's **Notes**, and a "Things to look at" list (over-budget categories, goals behind pace, emergency-fund coverage, credit score moves). Click any card to jump to its page. |
+| **Overview** | Headline numbers from every page (net worth, credit score, month spending vs budget, retirement status), a 12-month net-worth chart, spending donut, savings-goal progress, retirement progress ring, an **Income** card with a **Net / Gross / Both** toggle, this month's **Notes**, and a "Things to look at" list (over-budget categories, goals behind pace, emergency-fund coverage, credit score moves), with problems listed first, then things to watch, then good news. Click any card to jump to its page. |
 | **Net Worth** | Net worth, assets, debts and 12-month change; net-worth trend (6M / 1Y / 3Y / All) with assets and debts; pie charts for **Investments** and **On-budget accounts** plus overall asset mix; **credit score trend** with Poor→Exceptional bands; full accounts table. |
 | **Investments** *(can be hidden)* | Total invested, taxable vs retirement, this month's change and **12-month market growth with estimated return**; a growth chart for investment & retirement accounts (**Total / By group / By account**, 6M / 1Y / 3Y / All); **Balance vs money put in**; tax-treatment mix; **Where the change came from** (money put in vs market growth/loss each month); and an account performance table with 12-month trend lines, 1- and 12-month changes and estimated return. Plus a **(?)** explainer; past months are entered from the gear icon. |
 | **Spending & Savings** | Month picker and All / Debit / Credit filter; spending by category (split by debit vs credit, with budget ticks); category share donut; six-month trend; **savings goals** with progress, monthly amount needed, and behind-pace flags; transaction list. |
@@ -92,6 +92,16 @@ Values it can't confirm (a page couldn't be read, or its wording changed) are ke
 
 These are general U.S. federal rules for planning, not tax advice. State taxes and other countries differ.
 
+## PDF report
+
+Click **PDF report** at the top of the dashboard (to the right of **Import CSV**), or run *Create PDF report*. Tick the report(s) you want — nothing is pre-selected — and use the arrows to set the order they print in (the order is remembered). The name on the report comes from **Settings → Your name** and can be changed for a single report. The PDF is saved to the `Finance Dashboard` folder in your vault, opening in a new tab if you like. It follows a clinical-summary layout: a cover page with contents and headline numbers, then one section per report, each with its own running header and page numbers, and an appendix.
+
+- **Retirement & Income:** summary tiles, your settings and goals (with what each one means), projected savings by age with your target, retirement accounts with tax treatment, this year's IRS contribution limits, balance history, your retirement notes, and the Income card's figures with every income source and income change.
+- **Net Worth:** trend, assets by group, every account with how it's taxed, credit score history and notes.
+- **Investments:** growth, month-by-month money put in vs market growth, account performance and tax treatment.
+- **Spending & Savings:** the last 1, 3, 6 or 12 full months — spending by month and category against budgets, savings goals, and optionally every transaction.
+- **Appendix** (always): how every figure in the chosen reports is calculated, the settings used, numbered references with links (IRS, SSA, SEC/Investor.gov, CFPB, FINRA, research on withdrawal rates and returns) and a disclaimer.
+
 ## Retirement: explainer, term definitions, What-if planner and notes
 
 > **These are predictions, not guarantees.** Every retirement figure is an estimate based on your inputs and steady average returns, in today's dollars. Real markets, taxes, fees and life changes will make actual results differ. It's for planning only, not financial advice. This notice appears on the Retirement page, the Overview's retirement card, the explainer, the What-if planner and every page of the PDF.
@@ -140,12 +150,14 @@ You can enter a change with a future date (e.g. a new job starting next month). 
 - **Gross:** monthly gross, per year, deductions per month and year, and take-home rate.
 - **Both:** gross → net per month and per year, and the deduction rate.
 
-Below the figures is the most recent change (e.g. "Raise on Jul 1: +$258/mo net (+3.8%)") and any upcoming one. The history icon opens **Income history**, where you can edit or delete any change. Bank CSV deposit rows (Income/Paycheck) are skipped on import, since income comes from your monthly amount.
+**Additional income:** use **Add income** on the Income card (or the command *Add additional income*) for a side job, freelance work, rental income, dividends, a pension, Social Security, support payments or anything else. Each source has a name, type, gross and net per month (or per year), a start date and an optional end date. Leave net blank if no tax is withheld. Active sources are added to your monthly income everywhere it's used — the Income card's totals, "left after spending", the savings-rate insight and the estimated tax bracket — and listed on the card under your job. Future sources show as upcoming; ended ones stay in the history.
+
+Below the figures is the most recent change (e.g. "Raise on Jul 1: +$258/mo net (+3.8%)") and any upcoming one. The history icon opens **Income**, where you can edit or delete any job change or additional source. Bank CSV deposit rows (Income/Paycheck) are skipped on import, since income comes from your monthly amount.
 
 ## Notes
 
 - **Transactions** and **income changes** have an optional note field.
-- **Update balances** has a "What changed this time?" note, saved with today's date.
+- **Update balances** has a "What changed this time?" note, saved with today's date. It also has an optional **credit score** field (with its source), which adds today's point to the credit score trend.
 - You can also add a standalone note with **+ Note** (or the command **Add note**), for any date.
 
 Notes appear in the month they belong to:
