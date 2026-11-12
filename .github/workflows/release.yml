@@ -1,14 +1,20 @@
-# Attaches the plugin files (used by BRAT and manual installs) to a GitHub release.
-# Runs when you publish a release on GitHub, or when a version tag is pushed.
-# The tag must match "version" in manifest.json, e.g. 1.8.0 (no "v" prefix).
+# Creates a GitHub release for the plugin (used by BRAT and manual installs) and attaches
+# main.js, manifest.json and styles.css.
+#
+# Runs automatically when manifest.json changes on main: if there's no release yet for the
+# "version" in manifest.json, it creates one (with a tag of the same name, e.g. 1.9.0).
+# You can also run it by hand from the Actions tab ("Run workflow"), publish a release on
+# GitHub, or push a version tag; in every case the files are (re)attached.
 name: Release Obsidian plugin
 
 on:
+  push:
+    branches: [main]
+    paths: [manifest.json, .github/workflows/release.yml]
+    tags: ["*"]
   release:
     types: [published]
-  push:
-    tags:
-      - "*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -19,24 +25,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check tag matches manifest version
+      - name: Work out the version
+        id: v
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
           version=$(node -p "require('./manifest.json').version")
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            tag="${{ github.event.release.tag_name }}"
+          else
+            tag="$version"
+          fi
           if [ "$tag" != "$version" ]; then
             echo "Tag $tag does not match manifest.json version $version" >&2
             exit 1
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Create the release or attach files to it
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.v.outputs.tag }}
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" main.js manifest.json styles.css --clobber
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" main.js manifest.json styles.css --clobber
+            echo "Updated files on release $TAG"
           else
-            gh release create "$tag" main.js manifest.json styles.css \
-              --title "$tag" \
-              --notes "Finance Dashboard $tag. Install with BRAT: Settings → BRAT → Add beta plugin → bearbaitdesigns/obsidian_financedashboard. Tax and retirement figures are estimates for planning, not financial or tax advice."
+            gh release create "$TAG" main.js manifest.json styles.css \
+              --target "$GITHUB_SHA" \
+              --title "$TAG" \
+              --notes "Finance Dashboard $TAG. Install with BRAT: Settings → BRAT → Add beta plugin → bearbaitdesigns/obsidian_financedashboard. Tax and retirement figures are estimates for planning, not financial or tax advice."
+            echo "Created release $TAG"
           fi
