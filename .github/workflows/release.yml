@@ -1,0 +1,35 @@
+# Publishes a GitHub release (used by BRAT and manual installs) whenever a version tag is pushed.
+# Tag must match the "version" in manifest.json, e.g. 1.8.0 (no "v" prefix).
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches manifest version
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          version=$(node -p "require('./manifest.json').version")
+          if [ "$tag" != "$version" ]; then
+            echo "Tag $tag does not match manifest.json version $version" >&2
+            exit 1
+          fi
+
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" main.js manifest.json styles.css \
+            --title "$tag" \
+            --notes "Finance Dashboard $tag. Install with BRAT: Settings → BRAT → Add beta plugin → bearbaitdesigns/obsidian_financedashboard. Tax and retirement figures are estimates for planning, not financial or tax advice."
