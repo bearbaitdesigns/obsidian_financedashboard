@@ -736,3 +736,15 @@ line.fd-zeroline { stroke: var(--text-faint); stroke-width: 1; opacity: 0.6; }
 .fd-wi-plan-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .fd-wi-plan-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .fd-account-note { font-weight: 400; white-space: normal; max-width: 46ch; }
+
+/* "Where each number comes from" tables in the retirement explainer */
+.fd-trace-wrap { overflow-x: auto; margin: 6px 0 4px; }
+.fd-trace { width: 100%; border-collapse: collapse; font-size: 0.86em; }
+.fd-trace th { text-align: left; font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 600; padding: 4px 8px; border-bottom: 1px solid var(--background-modifier-border); }
+.fd-trace td { padding: 5px 8px; border-bottom: 1px dashed var(--background-modifier-border); vertical-align: top; }
+.fd-trace td:first-child { white-space: nowrap; }
+.fd-trace .is-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 600; }
+.fd-trace-from { color: var(--text-muted); line-height: 1.4; min-width: 220px; }
+.fd-trace tr.is-strong td { font-weight: 700; border-top: 1px solid var(--background-modifier-border); }
+.fd-trace tr.is-strong .fd-trace-from { font-weight: 400; }
+@media (max-width: 640px) { .fd-trace td:first-child { white-space: normal; } }

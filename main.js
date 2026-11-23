@@ -230,8 +230,11 @@ function migrateRetirementIncome(r) {
   if (!Array.isArray(r.pensions)) r.pensions = [];
   if (r.otherIncome != null) {
     if (num(r.otherIncome) > 0 && !num(r.socialSecurity.monthly) && !r.pensions.length) {
-      // Keep the old result: same amount, starting at the retirement age, used as entered.
-      r.socialSecurity = { monthly: Math.round(num(r.otherIncome) / 12), mode: 'exact', startAge: clamp(num(r.targetAge) || 67, 62, 70), migrated: true };
+      // Keep the old result: same amount, starting at the retirement age, used as entered. Social Security can only
+      // start at 62–70, so outside that range it's kept as an income starting at the retirement age instead.
+      const ta = num(r.targetAge) || 67, monthly = Math.round(num(r.otherIncome) / 12 * 100) / 100;
+      if (ta >= 62 && ta <= 70) r.socialSecurity = { monthly, mode: 'exact', startAge: ta, migrated: true };
+      else r.pensions.push({ id: uid(), source: 'Social Security / pension (from earlier version)', monthly, startAge: ta, accountId: '', migrated: true });
     }
     delete r.otherIncome;
   }
@@ -306,6 +309,95 @@ function pensionAccountCheck(data, r) {
 
 /** The dashboard's retirement plan: the scenario engine with no changes. */
 function retirementPlan(data) { return simulateRetirement(data, null); }
+
+/**
+ * The retirement math as steps, with every number traced to where it comes from. Shared by the explainer and the PDF
+ * report so they always agree with the dashboard. Each step: {key, title, rows:[{label, value, from}], result, help}
+ */
+function retirementMath(plan, data, f) {
+  const r = plan.r, m = (v) => f.money(v), pct = (v, dp = 2) => f.pct(v, dp);
+  const steps = [];
+  const G = 'Retirement goals';
+  const bd = r.birthDate ? new Date(r.birthDate + 'T00:00:00') : null;
+  // 1. Inputs that come straight from settings
+  steps.push({ key: 'inputs', title: 'Your inputs', help: null, rows: [
+    { label: 'Current age', value: plan.age.toFixed(1), from: `${G} → Date of birth (${bd ? bd.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}) to today` },
+    { label: 'Stop working at', value: `age ${plan.targetAge}`, from: `${G} → Retire from work at age` },
+    { label: 'Desired income', value: `${m(num(r.annualIncome) / 12)}/mo`, from: `${G} → Desired monthly income (${m(num(r.annualIncome))}/yr)` },
+    { label: 'Withdrawal rate', value: `${num(r.withdrawalRate)}%`, from: `${G} → Safe withdrawal rate` },
+    { label: 'Expected return', value: `${num(r.expectedReturn)}%`, from: `${G} → Expected annual return` },
+    { label: 'Inflation', value: `${num(r.inflation)}%`, from: `${G} → Inflation` },
+  ] });
+  // 2. Income sources
+  const inc = [];
+  for (const s of plan.streams) {
+    if (s.kind === 'ss') {
+      const i = s.ss;
+      const early = Math.round((i.fraAge - i.startAge) * 12);
+      const how = i.mode === 'exact' ? 'used as entered' : early > 0
+        ? `${early} month${early === 1 ? '' : 's'} before full retirement age ${ageText(i.fraAge)}: −(${Math.min(early, 36)} × 5/9%${early > 36 ? ` + ${early - 36} × 5/12%` : ''}) = ${pct(i.factor - 1)} → ${pct(i.factor)} of the benefit`
+        : early < 0 ? `${-early} month${early === -1 ? '' : 's'} after full retirement age ${ageText(i.fraAge)}: +${Math.min(-early, Math.round((70 - i.fraAge) * 12))} × 2/3% = +${pct(i.factor - 1)}` : `at full retirement age ${ageText(i.fraAge)}: 100%`;
+      inc.push({ label: `Social Security from ${ageText(i.startAge)}`, value: `${m(s.monthly)}/mo`,
+        from: i.mode === 'exact' ? `${G} → Social Security, ${m(i.entered)}/mo at your start age (used as entered)${r.socialSecurity && r.socialSecurity.migrated ? ' — moved from the old “Social Security / pension” amount' : ''}`
+          : early === 0 ? `${G} → Social Security: ${m(i.entered)}/mo at full retirement age (${ageText(i.fraAge)}, from your birth year), starting then, so 100% of it`
+      : `${G} → Social Security: ${m(i.entered)}/mo at full retirement age × ${pct(i.factor)} (${how}; full retirement age from your birth year, SSA rules)` });
+    } else {
+      const acct = s.accountId && data.accounts.find((a) => a.id === s.accountId);
+      inc.push({ label: `${s.name} from ${ageText(s.startAge)}`, value: `${m(s.monthly)}/mo`, from: `${G} → Pensions → ${s.name}${acct ? ` (linked to account “${acct.name}”)` : ''}` });
+    }
+  }
+  if (!inc.length) inc.push({ label: 'Social Security & pensions', value: 'None', from: `${G} → Social Security and Pensions are empty` });
+  steps.push({ key: 'income', title: 'Income that doesn’t come from savings', help: 'incomePlan', rows: inc });
+  // 3. What savings must pay in each phase
+  const D = num(r.annualIncome) / 12;
+  steps.push({ key: 'phases', title: 'What savings pay each month', help: 'incomePlan', rows: plan.phases.map((p) => ({
+    label: p.to != null ? `Age ${ageText(p.from)} – ${ageText(p.to)}` : `Age ${ageText(p.from)} on`,
+    value: `${m(p.fromSavings)}/mo`,
+    from: `${m(D)} desired${p.streams.map((x) => ` − ${m(x.monthly)} ${x.name}`).join('')}${p.surplus > 0.5 ? ` → ${m(p.surplus)} more than needed, so savings pay $0` : ` = ${m(p.fromSavings)}`}`,
+  })) });
+  // 4. Target nest egg
+  const last = plan.phases[plan.phases.length - 1];
+  const tRows = [
+    { label: 'Savings need once everything has started', value: `${m(plan.needLater)}/yr`, from: `${m(last.fromSavings)}/mo (age ${ageText(last.from)} on, step 3) × 12` },
+    { label: 'Long-run savings', value: m(num(r.withdrawalRate) > 0 ? plan.needLater / (num(r.withdrawalRate) / 100) : 0), from: `${m(plan.needLater)}/yr ÷ ${num(r.withdrawalRate)}% withdrawal rate (step 1)` },
+  ];
+  for (const b of plan.bridgeParts || []) {
+    tRows.push({ label: `Bridge, age ${ageText(b.from)} – ${ageText(b.to)}`, value: m(b.pv),
+      from: `${m(b.extra)}/mo more than the long-run ${m(last.fromSavings)}/mo, for ${b.months} months, in today’s value at ${pct(plan.real)} real return (step 5)` });
+  }
+  tRows.push({ label: 'Target nest egg', value: m(plan.target), from: plan.bridge > 0.5 ? `${m(plan.needLater / (num(r.withdrawalRate) / 100))} + ${m(plan.bridge)} bridge` : 'Long-run savings (no bridge: all income starts by your retirement age)', strong: true });
+  steps.push({ key: 'target', title: 'Target nest egg', help: 'targetNestEgg', rows: tRows });
+  // 5. Return
+  steps.push({ key: 'real', title: 'Real return (today’s dollars)', help: 'returnInflation', rows: [
+    { label: 'Real return', value: `${pct(plan.real)}/yr`, from: `(1 + ${num(r.expectedReturn)}%) ÷ (1 + ${num(r.inflation)}%) − 1 (step 1)` },
+    { label: 'Per month', value: pct(Math.pow(1 + plan.real, 1 / 12) - 1, 3), from: `(1 + ${pct(plan.real)})^(1/12) − 1` },
+  ] });
+  // 6. Savings today
+  const all = data.accounts.filter((a) => a.group === 'retirement' || (r.includeInvestments && a.group === 'investment'));
+  const sRows = plan.accounts.map((a) => ({ label: a.name, value: m(num(a.balance)), from: `Accounts → ${a.group === 'investment' ? 'Investment (counted because “Count taxable investments” is on)' : 'Retirement'} · contributes ${m(num(a.contribution) / 12)}/mo` }));
+  for (const a of plan.excluded || []) sRows.push({ label: a.name, value: 'not counted', from: `Accounts → Retirement (${m(num(a.balance))}) — linked to a pension in ${G}, so it’s counted as that monthly income instead`, muted: true });
+  sRows.push({ label: 'Retirement savings', value: m(plan.balance), from: `Sum of the counted accounts above${all.length !== plan.accounts.length ? ` (Net Worth and Investments show ${m(sum(all, (a) => a.balance))} including linked pensions)` : ''}`, strong: true });
+  sRows.push({ label: 'Contributions', value: `${m(plan.contribution / 12)}/mo`, from: 'Sum of each counted account’s Contribution per month', strong: true });
+  steps.push({ key: 'savings', title: 'Retirement savings today', help: 'contributions', rows: sRows });
+  // 7. Projection & status
+  steps.push({ key: 'projection', title: `Projection to age ${plan.targetAge}`, help: 'projected', rows: [
+    { label: 'Each month', value: '', from: `balance × (1 + ${pct(Math.pow(1 + plan.real, 1 / 12) - 1, 3)}) + ${m(plan.contribution / 12)} (steps 5 and 6)` },
+    { label: `Projected at ${plan.targetAge}`, value: m(plan.projectedAtTarget), from: `${Math.max(0, Math.round((plan.targetAge - plan.age) * 12))} months of growth from ${m(plan.balance)}` },
+    { label: 'Funded', value: pct(plan.ratio, 0), from: `${m(plan.projectedAtTarget)} ÷ ${m(plan.target)} target (step 4) → ${STATUS_TEXT[plan.status]} (100%+ on track, 85–99% slightly behind)`, strong: true },
+    { label: 'Ready to retire', value: plan.estAge != null ? `age ${plan.estAge.toFixed(1)}` : 'after 100', from: 'First month the projection reaches the target' },
+    plan.pastTarget
+      ? { label: 'Needed contribution', value: 'n/a', from: `You’re already ${plan.age.toFixed(1)}, past your target age of ${plan.targetAge}, so contributions can’t change the balance at that age${plan.shortfall > 0.5 ? ` (${m(plan.shortfall)} short of the target)` : ''}. Try a later retirement age in Retirement goals or What-if.` }
+      : plan.extraNeededYr > 0.5
+      ? { label: 'Needed contribution', value: `${m(plan.requiredContribution / 12)}/mo`, from: `${m(plan.contribution / 12)}/mo now (step 6) + ${m(plan.extraNeededYr / 12)}/mo more — the extra that grows to the ${m(plan.target - plan.projectedAtTarget)} shortfall by ${plan.targetAge} (future-value formula)` }
+      : { label: 'Extra needed', value: '$0/mo', from: `Your ${m(plan.contribution / 12)}/mo already reaches the ${m(plan.target)} target by ${plan.targetAge}, so no increase is needed` },
+  ] });
+  // 8. Drawdown
+  steps.push({ key: 'lasts', title: 'Money lasts & income it supports', help: 'moneyLasts', rows: [
+    { label: 'Money lasts until', value: plan.lastsText, from: `Start with ${m(plan.projectedAtTarget)} at ${plan.targetAge}; each month earn ${pct(Math.pow(1 + plan.real, 1 / 12) - 1, 3)} and pay what step 3 says` },
+    { label: 'Income it supports', value: `${m(plan.sustainableIncome / 12)}/mo`, from: `(${m(plan.projectedAtTarget)} − ${m(plan.bridge)} bridge) × ${num(r.withdrawalRate)}% ÷ 12 + ${m(plan.incomeAll / 12)} Social Security & pensions` },
+  ] });
+  return steps;
+}
 
 const STATUS_TEXT = { 'on-track': 'On track', close: 'Slightly behind', behind: 'Off track' };
 
@@ -1433,9 +1525,13 @@ const GLOSSARY = {
   contributions: { title: 'Contributions',
     body: ['What goes into your retirement accounts each month, including any employer match. Set them on each account; the projection adds them every month.'],
     calc: ({ f, plan }) => `${f.money(plan.contribution / 12)}/mo (${f.money(plan.contribution)}/yr).` },
+  retirementSavings: { title: 'Retirement savings',
+    body: ['The balances that count toward your retirement projection: every Retirement account (and taxable Investment accounts if you chose to count them), except Pension accounts linked to a pension — those are counted as monthly income instead.',
+      'That’s why this can be lower than the Retirement total on Net Worth and Investments, which include every account.'],
+    calc: ({ f, plan }) => `${plan.accounts.map((a) => `${a.name} ${f.money(num(a.balance))}`).join(' + ')} = ${f.money(plan.balance)}${plan.excluded && plan.excluded.length ? ` · not counted (linked pension): ${plan.excluded.map((a) => `${a.name} ${f.money(num(a.balance))}`).join(', ')}` : ''}` },
   neededContribution: { title: 'Needed contribution',
-    body: ['The monthly contribution that would make your projection reach your target exactly at your target age, at your expected return.'],
-    calc: ({ f, plan }) => `${f.money(plan.requiredContribution / 12)}/mo needed vs ${f.money(plan.contribution / 12)}/mo today.` },
+    body: ['How much you’d need to contribute each month for your projection to reach your target exactly at your target age. If you’re already on track, no extra is needed.'],
+    calc: ({ f, plan }) => (plan.pastTarget ? 'Doesn’t apply: you’re already past your target age.' : plan.extraNeededYr > 0.5 ? `${f.money(plan.requiredContribution / 12)}/mo needed = ${f.money(plan.contribution / 12)}/mo today + ${f.money(plan.extraNeededYr / 12)}/mo more.` : `None extra: your ${f.money(plan.contribution / 12)}/mo already reaches the target by ${plan.targetAge}.`) },
   taxTreatment: { title: 'Tax treatment',
     body: ['Tax-deferred (traditional 401(k)/IRA): lowers taxes now; withdrawals are taxed. Tax-free (Roth): taxed now; qualified withdrawals are tax-free. HSA: tax-free for medical costs. Taxable: no special treatment.', 'A mix gives you flexibility in retirement. The projection itself doesn’t model taxes.'] },
   sustainableIncome: { title: 'Income it supports',
@@ -1553,7 +1649,7 @@ function simulateRetirement(data, sc) {
   const age = ageOn(r.birthDate, now);
   // Pension accounts linked to a pension income pay out as income, so their balance isn't also counted as savings.
   const streams = retirementStreams(r);
-  const linkedIds = new Set(streams.map((x) => x.accountId).filter(Boolean));
+  const linkedIds = new Set((r.pensions || []).map((p) => p.accountId).filter(Boolean));
   const accts = data.accounts.filter((a) => (a.group === 'retirement' || (r.includeInvestments && a.group === 'investment')) && !linkedIds.has(a.id));
   const excluded = data.accounts.filter((a) => linkedIds.has(a.id));
   const buckets = new Map(accts.map((a) => [a.id, { id: a.id, name: a.name, bal: num(a.balance), base: num(a.contribution) / 12 }]));
@@ -1579,7 +1675,16 @@ function simulateRetirement(data, sc) {
   // Bridge: extra savings needed until every income has started, valued at the real return.
   let bridge = 0;
   const lastStart = phases[phases.length - 1].from;
-  for (let k = 0; k < Math.round((lastStart - targetAge) * 12); k++) bridge += (gapAt(targetAge + k / 12) - gLast) / Math.pow(1 + gm0, k);
+  const bridgeParts = [];
+  for (let k = 0; k < Math.round((lastStart - targetAge) * 12); k++) {
+    const extra = gapAt(targetAge + k / 12) - gLast, pv = extra / Math.pow(1 + gm0, k);
+    bridge += pv;
+    // Group by phase so the explainer can show where each part of the bridge comes from
+    const ph = phases.filter((p) => p.from <= targetAge + k / 12 + 1e-9).pop();
+    let part = bridgeParts[bridgeParts.length - 1];
+    if (!part || part.from !== ph.from) { part = { from: ph.from, to: ph.to, extra, months: 0, pv: 0 }; bridgeParts.push(part); }
+    part.months++; part.pv += pv;
+  }
   const need = phases[0].fromSavings * 12;                           // yearly, from savings in the first year of retirement
   const needLater = gLast * 12;
   const target = (wr > 0 ? needLater / wr : 0) + bridge;
@@ -1646,15 +1751,17 @@ function simulateRetirement(data, sc) {
   }
   const lastsText = !anyGap ? 'Forever' : lastsAge == null || lastsAge > 100 ? '100+' : `Age ${Math.floor(lastsAge)}`;
   const incomeAll = sum(streams, (x) => x.monthly) * 12;
-  const extraNeededYr = factor > 0 ? Math.max(0, target - atTarget) / factor * 12 : Math.max(0, target - atTarget);
+  // Already at or past the target age: no months left for contributions to make a difference.
+  const pastTarget = !(factor > 0);
+  const extraNeededYr = pastTarget ? 0 : Math.max(0, target - atTarget) / factor * 12;
   const estAge = hit === null ? null : age + hit / 12;
   const estDate = hit === null ? null : new Date(now.getFullYear(), now.getMonth() + hit, 1);
   const ratio = target > 0 ? atTarget / target : 1;
   return {
-    r, age, targetAge, need, needLater, bridge, phases, streams, excluded, incomeAll, wr, target, real: baseReal, balance: balance0, contribution: contribution0, contribNow: contribNow == null ? contribution0 : contribNow,
+    r, age, targetAge, need, needLater, bridge, bridgeParts: bridgeParts.filter((b) => b.extra > 0.005), phases, streams, excluded, incomeAll, wr, target, real: baseReal, balance: balance0, contribution: contribution0, contribNow: contribNow == null ? contribution0 : contribNow,
     points, projectedAtTarget: atTarget, byAccount: (byAccount || []).filter((b) => b.balance > 0.5).sort((a, b) => b.balance - a.balance),
     ratio, status: ratio >= 1 ? 'on-track' : ratio >= 0.85 ? 'close' : 'behind', estAge, estDate,
-    lastsAge, lastsText, sustainableIncome: Math.max(0, atTarget - bridge) * wr + incomeAll, extraNeededYr, requiredContribution: contribution0 + extraNeededYr,
+    lastsAge, lastsText, sustainableIncome: Math.max(0, atTarget - bridge) * wr + incomeAll, extraNeededYr, pastTarget, shortfall: Math.max(0, target - atTarget), requiredContribution: contribution0 + extraNeededYr,
     contributedToTarget, events: evs, accounts: accts, progress: target > 0 ? balance0 / target : 0,
   };
 }
@@ -1997,7 +2104,7 @@ function buildWhatIfPDF(data, scenarios, f) {
       ['Money lasts until', base.lastsText, s.lastsText, '', null],
       ['Income it supports', `${money(base.sustainableIncome / 12)}/mo`, `${money(s.sustainableIncome / 12)}/mo`, delta((s.sustainableIncome - base.sustainableIncome) / 12, money), toneOf(s.sustainableIncome - base.sustainableIncome)],
       ['Contributions now', `${money(base.contribNow)}/yr`, `${money(s.contribNow)}/yr`, delta(s.contribNow - base.contribNow, money), null],
-      ['Extra savings needed for target', base.extraNeededYr > 0.5 ? `${money(base.extraNeededYr)}/yr` : 'None', s.extraNeededYr > 0.5 ? `${money(s.extraNeededYr)}/yr` : 'None', '', null],
+      ['Extra savings needed for target', base.extraNeededYr > 0.5 ? `${money(base.extraNeededYr / 12)}/mo` : 'None', s.extraNeededYr > 0.5 ? `${money(s.extraNeededYr / 12)}/mo` : 'None', '', null],
     ];
     table([{ label: 'Measure', w: 0.34 }, { label: 'Current plan', w: 0.22, align: 'right' }, { label: 'This scenario', w: 0.24, align: 'right' }, { label: 'Difference', w: 0.2, align: 'right' }],
       rows.map((rw) => ({ cells: rw.slice(0, 4), tones: [null, null, null, rw[4]] })));
@@ -2129,35 +2236,39 @@ class RetirementInfoModal extends Modal {
       keys.forEach((k, i) => { if (i) row.append(' · '); sourceLink(row, k, SOURCES[k].by.split(' · ')[0] === 'Wikipedia' ? SOURCES[k].title.split(' (')[0] : SOURCES[k].title.split(' (')[0]); });
     };
 
-    // 1. The math, step by step with the person's numbers
+    // 1. The math, step by step with the person's numbers — every number shows where it comes from
     const s1 = section('How it’s calculated', 'calculator');
+    s1.createDiv({ cls: 'fd-muted fd-info-intro', text: 'Each step lists the numbers it uses and where each one comes from — a setting you entered, an account, or an earlier step. Everything is per month in today’s dollars unless it says otherwise.' });
     const ol = s1.createEl('ol', { cls: 'fd-steps' });
-    const wr = num(r.withdrawalRate), rm = Math.pow(1 + plan.real, 1 / 12) - 1;
-    const step = (title, help, text, formula, sources) => {
+    const DESC = {
+      inputs: 'What you entered in Retirement goals.',
+      income: 'Social Security and each pension start at the age you chose. Social Security is adjusted for starting before or after your full retirement age, using SSA’s rules.',
+      phases: 'Your savings cover whatever part of your desired income those sources don’t — more before they start, less after.',
+      target: 'Once everything has started, the yearly amount savings must cover is divided by your withdrawal rate: the balance that can keep paying it. If some income starts after you stop working, the bridge — what covering those early years costs in today’s money — is added.',
+      real: 'Everything is in today’s dollars, so inflation is taken out of your expected return instead of inflating your target.',
+      savings: 'The balances and monthly contributions of the accounts that count toward retirement.',
+      projection: 'Each month the balance earns the monthly real return, then that month’s contributions are added — compound growth.',
+      lasts: 'From your retirement age, savings pay what step 3 says each month while still earning the real return.',
+    };
+    const SRC = { income: ['ssaEstimate', 'ssaEarly', 'ssaDelay'], target: ['trinity', 'cooley', 'bengen', 'morningstar'], real: ['fisher', 'damodaran', 'cpi'], projection: ['compound', 'savingsGoal'], lasts: ['trinity'] };
+    for (const st of retirementMath(plan, d, f)) {
       const li = ol.createEl('li', { cls: 'fd-step' });
       const h = li.createDiv({ cls: 'fd-step-title' });
-      if (help) termEl(h, title, help, ctx); else h.setText(title);
-      li.createDiv({ cls: 'fd-step-text', text });
-      if (formula) li.createDiv({ cls: 'fd-formula', text: formula });
-      srcRow(li, sources);
-    };
-    step('Line up your retirement income', 'incomePlan', 'Social Security and each pension start at the age you chose. Savings cover the rest of your desired income — more before those start, less after. Social Security is adjusted for starting before or after your full retirement age.',
-      phaseLines(plan, f).join(' · '), ['ssaEstimate', 'ssaEarly', 'ssaDelay']);
-    step('Set your target nest egg', 'targetNestEgg', 'Once everything has started, dividing what savings must cover each year by your withdrawal rate gives the balance that can sustain it. If you retire before some income starts, the bridge — the cost of covering those early years — is added.',
-      `${f.money(plan.needLater)}/yr ÷ ${wr}%${plan.bridge > 0.5 ? ` + ${f.money(plan.bridge)} bridge` : ''} = ${f.money(plan.target)}`, ['trinity', 'cooley', 'bengen', 'morningstar']);
-    step('Turn your return into a real return', 'returnInflation', 'Everything is in today’s dollars, so inflation is taken out of your expected return instead of inflating your target.',
-      `(1 + ${num(r.expectedReturn)}%) ÷ (1 + ${num(r.inflation)}%) − 1 = ${f.pct(plan.real, 2)}/yr ≈ ${f.pct(rm, 3)}/month`, ['fisher', 'damodaran', 'cpi']);
-    step('Start from today’s savings', null, `${f.money(plan.balance)} across ${plan.accounts.length} account${plan.accounts.length === 1 ? '' : 's'}${r.includeInvestments ? ' (including taxable investments)' : ''}, plus ${f.money(plan.contribution / 12)}/mo in contributions${plan.excluded && plan.excluded.length ? `. Not counted as savings because they’re linked to a pension income: ${plan.excluded.map((a) => a.name).join(', ')}` : ''}.`, null, null);
-    step('Grow it month by month', 'projected', 'Each month the balance earns the monthly real return, then that month’s contributions are added — compound growth.',
-      `next month = balance × (1 + ${f.pct(rm, 3)}) + ${f.money(plan.contribution / 12)}`, ['compound']);
-    step(`Compare at your target age (${plan.targetAge})`, 'status', 'The projected balance at your target age is divided by your target. 100%+ is on track, 85–99% slightly behind, under 85% off track.',
-      `${f.money(plan.projectedAtTarget)} ÷ ${f.money(plan.target)} = ${f.pct(plan.ratio)} → ${STATUS_TEXT[plan.status]}`, null);
-    step('Estimate when you’re ready', 'estimatedRetirement', 'The first month the projected balance reaches the target, if you keep saving at today’s rate.',
-      plan.estDate ? `${plan.estDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })} · age ${plan.estAge.toFixed(1)}` : 'Not reached by age 100 at today’s rate', null);
-    step('Work out what it would take', 'neededContribution', 'The steady monthly contribution that lands exactly on your target at your target age (the standard future-value-of-savings formula, solved for the payment).',
-      plan.requiredContribution > plan.contribution ? `${f.money(plan.requiredContribution / 12)}/mo needed — ${f.money((plan.requiredContribution - plan.contribution) / 12)}/mo more than today` : `${f.money(plan.requiredContribution / 12)}/mo would be enough — you’re already saving ${f.money(plan.contribution / 12)}/mo`, ['savingsGoal']);
-    step('Check how long it lasts', 'moneyLasts', 'Starting at your target age, each month savings pay what Social Security and pensions don’t, at the same real return, until the money runs out.',
-      `${f.money(sim.projectedAtTarget)} paying ${f.money(sim.need / 12)}/mo${sim.needLater !== sim.need ? ` (then ${f.money(sim.needLater / 12)}/mo)` : ''} → lasts until ${sim.lastsText.replace('Age ', 'age ')}`, ['trinity']);
+      if (st.help) termEl(h, st.title, st.help, ctx); else h.setText(st.title);
+      if (DESC[st.key]) li.createDiv({ cls: 'fd-step-text', text: DESC[st.key] });
+      const tw = li.createDiv({ cls: 'fd-trace-wrap' });
+      const t = tw.createEl('table', { cls: 'fd-trace' });
+      const hr = t.createEl('thead').createEl('tr');
+      ['Number', 'Value', 'Where it comes from'].forEach((x, k) => hr.createEl('th', { text: x, cls: k === 1 ? 'is-num' : '' }));
+      const tb = t.createEl('tbody');
+      for (const row of st.rows) {
+        const tr = tb.createEl('tr', { cls: (row.strong ? 'is-strong' : '') + (row.muted ? ' fd-muted' : '') });
+        tr.createEl('td', { text: row.label });
+        tr.createEl('td', { cls: 'is-num', text: row.value });
+        tr.createEl('td', { cls: 'fd-trace-from', text: row.from });
+      }
+      srcRow(li, SRC[st.key]);
+    }
 
     // 2. Personalized levers
     const s2 = section('What could improve your outcome', 'lightbulb');
@@ -2405,8 +2516,8 @@ class WhatIfModal extends Modal {
     tile('Money lasts until', 'moneyLasts', s.lastsText, { delta: s.lastsText === base.lastsText ? '' : `was ${base.lastsText.toLowerCase()}`,
       tone: s.lastsText === base.lastsText ? 'flat' : lastsVal(s) > lastsVal(base) ? 'good' : 'bad', sub: `Savings pay ${money(s.need / 12)}/mo from ${s.targetAge}${s.needLater !== s.need ? `, ${money(s.needLater / 12)}/mo later` : ''}` });
     tile('Income it supports', 'sustainableIncome', `${money(s.sustainableIncome / 12)}/mo`, { delta: dMoney((s.sustainableIncome - base.sustainableIncome) / 12), tone: tone(s.sustainableIncome - base.sustainableIncome), sub: `Goal ${money(num(s.r.annualIncome) / 12)}/mo` });
-    tile('Extra needed for target', 'neededContribution', s.extraNeededYr > 0.5 ? `${money(s.extraNeededYr)}/yr` : 'None', { delta: dMoney(s.extraNeededYr - base.extraNeededYr), tone: tone(base.extraNeededYr - s.extraNeededYr),
-      sub: s.extraNeededYr > 0.5 ? `${money(s.extraNeededYr / 12)}/mo more from now` : `On track at ${s.targetAge}` });
+    tile('Extra needed for target', 'neededContribution', s.extraNeededYr > 0.5 ? `${money(s.extraNeededYr / 12)}/mo` : 'None', { delta: dMoney((s.extraNeededYr - base.extraNeededYr) / 12), tone: tone(base.extraNeededYr - s.extraNeededYr),
+      sub: s.pastTarget ? 'Already past this retirement age' : s.extraNeededYr > 0.5 ? `${money(s.extraNeededYr)}/yr more from now` : `On track at ${s.targetAge}` });
 
     // Chart
     const cc = main.createDiv({ cls: 'fd-wi-card' });
@@ -2587,7 +2698,7 @@ class WhatIfModal extends Modal {
     const ctx = () => ({ plan: this.sims.get(sc.id) || this.base, f, r: eff });
     const ss = eff.socialSecurity || {};
     const pens = eff.pensions || [];
-    const values = Object.assign({}, eff, { desiredMonthly: Math.round(num(eff.annualIncome) / 12), ssMonthly: num(ss.monthly) || '', ssMode: ss.mode === 'exact' ? 'exact' : 'fra', ssStartAge: num(ss.startAge) || 67 });
+    const values = Object.assign({}, eff, { desiredMonthly: Math.round(num(eff.annualIncome) / 12 * 100) / 100, ssMonthly: num(ss.monthly) || '', ssMode: ss.mode === 'exact' ? 'exact' : 'fra', ssStartAge: num(ss.startAge) || 67 });
     const fields = [
       { key: 'targetAge', label: 'Retire from work at age', type: 'number', half: true, help: 'targetAge' },
       { key: 'desiredMonthly', label: 'Desired monthly income', type: 'number', half: true, help: 'desiredIncome' },
@@ -2620,7 +2731,7 @@ class WhatIfModal extends Modal {
         if (v.withdrawalRate <= 0 || v.withdrawalRate > 15) throw new Error('Withdrawal rate should be between 0 and 15%.');
         if (v.ssMonthly && (v.ssStartAge < 62 || v.ssStartAge > 70)) throw new Error('Social Security can start between ages 62 and 70.');
         const next = {
-          targetAge: num(v.targetAge), annualIncome: Math.abs(num(v.desiredMonthly)) * 12, withdrawalRate: num(v.withdrawalRate), expectedReturn: num(v.expectedReturn), inflation: num(v.inflation), includeInvestments: !!v.includeInvestments,
+          targetAge: num(v.targetAge), annualIncome: Math.abs(num(v.desiredMonthly)) === Math.round(num(eff.annualIncome) / 12 * 100) / 100 ? num(eff.annualIncome) : Math.abs(num(v.desiredMonthly)) * 12, withdrawalRate: num(v.withdrawalRate), expectedReturn: num(v.expectedReturn), inflation: num(v.inflation), includeInvestments: !!v.includeInvestments,
           socialSecurity: { monthly: Math.abs(num(v.ssMonthly)), mode: v.ssMode === 'exact' ? 'exact' : 'fra', startAge: clamp(num(v.ssStartAge) || 67, 62, 70) },
           pensions: pens.map((p) => Object.assign({}, p, { monthly: Math.abs(num(v[`pm_${p.id}`])), startAge: num(v[`pa_${p.id}`]) || num(p.startAge) })),
         };
@@ -3188,7 +3299,7 @@ function buildFinanceReport(data, opts, f) {
       { label: `Projected at ${plan.targetAge}`, value: money(plan.projectedAtTarget), sub: `${f.pct(plan.ratio)} of target · ${STATUS_TEXT[plan.status]}`, color: plan.status === 'on-track' ? GOOD : plan.status === 'behind' ? BAD : WARN },
       { label: 'Money lasts until', value: plan.lastsText, sub: `supports ${money(plan.sustainableIncome / 12)}/mo` },
     ]);
-    if (plan.extraNeededYr > 0.5) callout(`To reach your target by age ${plan.targetAge}, contributions would need to rise by about ${money(plan.extraNeededYr)}/yr (to ${money(plan.contribution + plan.extraNeededYr)}/yr), or plan on retiring around ${plan.estAge != null ? Math.ceil(plan.estAge) : 'a later age'}.`, 'warn');
+    if (plan.extraNeededYr > 0.5) callout(`To reach your target by age ${plan.targetAge}, contributions would need to rise by about ${money(plan.extraNeededYr / 12)}/mo (to ${money((plan.contribution + plan.extraNeededYr) / 12)}/mo), or plan on retiring around ${plan.estAge != null ? Math.ceil(plan.estAge) : 'a later age'}.`, 'warn');
     else callout(`On track: at ${plan.targetAge} you’re projected to have ${money(plan.projectedAtTarget)}, ${f.pct(plan.ratio)} of your ${money(plan.target)} target.`);
 
     heading('Your settings and goals');
@@ -3459,6 +3570,14 @@ function buildFinanceReport(data, opts, f) {
       'Not modeled: taxes on withdrawals, fees beyond what your expected return assumes, year-to-year market swings (sequence-of-returns risk) and changes to Social Security.',
     ]);
     settingsBox(`retire at ${plan.targetAge}; desired income ${money(num(r.annualIncome) / 12)}/mo; Social Security ${wiFmtAssumption('socialSecurity', r.socialSecurity, f, r)}; pensions ${wiFmtAssumption('pensions', r.pensions, f, r)}; withdrawal rate ${num(r.withdrawalRate)}%; return ${num(r.expectedReturn)}%; inflation ${num(r.inflation)}%; taxable investments ${r.includeInvestments ? 'counted' : 'not counted'}. Sources: ${cite(['trinity', 'cooley', 'bengen', 'morningstar', 'fisher', 'damodaran', 'cpi', 'fees', 'compound', 'savingsGoal', 'ssaEstimate', 'ssaEarly', 'ssaDelay', 'irsLimits'])}`);
+    subheading('Your numbers and where they come from');
+    for (const st of retirementMath(plan, d, f)) {
+      ensure(60);
+      pdf.text(M, y + 9, st.title, { size: 9, bold: true, color: ACC.retirement });
+      y += 14;
+      table([{ label: 'Number', w: 0.27, wrap: true }, { label: 'Value', w: 0.15, align: 'right' }, { label: 'Where it comes from', w: 0.58, wrap: true }],
+        st.rows.map((row) => ({ cells: [row.label, row.value, row.from], boldCols: row.strong ? [0, 1] : null, tones: row.muted ? [FAINT, FAINT, FAINT] : null })), { size: 7.8 });
+    }
     heading('Income', { color: ACC.retirement });
     bullets([
       'Income is a guaranteed amount per month (gross before taxes and deductions; net is take-home). Amounts entered per year or per paycheck are converted to monthly.',
@@ -4894,7 +5013,7 @@ class Dashboard {
       { label: 'Status', value: STATUS_TEXT[plan.status], tone: plan.status === 'on-track' ? 'good' : plan.status === 'behind' ? 'bad' : null },
     ] } });
     const facts = rrow.createDiv({ cls: 'fd-facts' });
-    this.fact(facts, 'Saved today', f.money(plan.balance));
+    this.fact(facts, 'Saved today', f.money(plan.balance), 'retirementSavings');
     this.fact(facts, 'Target nest egg', f.money(plan.target), 'targetNestEgg');
     this.fact(facts, `Projected at ${plan.targetAge}`, f.money(plan.projectedAtTarget), 'projected');
     this.fact(facts, 'Est. retirement', plan.estDate ? `${monthLabel(monthKey(plan.estDate), true)} (age ${plan.estAge.toFixed(1)})` : 'Not reached by 100', 'estimatedRetirement');
@@ -5669,7 +5788,7 @@ class Dashboard {
     body.insertBefore(predictionNote(body, true), bar);
 
     const kpis = body.createDiv({ cls: 'fd-kpis' });
-    this.kpi(kpis, 'Retirement savings', f.money(plan.balance), { icon: 'piggy-bank', sub: `${f.money(plan.contribution / 12)}/mo contributions`, help: 'contributions' });
+    this.kpi(kpis, 'Retirement savings', f.money(plan.balance), { icon: 'piggy-bank', sub: `${f.money(plan.contribution / 12)}/mo contributions${plan.excluded && plan.excluded.length ? ` · excl. linked pension` : ''}`, help: 'retirementSavings' });
     this.kpi(kpis, 'Target nest egg', f.money(plan.target), { icon: 'target', sub: plan.bridge > 0.5 ? `incl. ${f.money(plan.bridge)} bridge to SS/pension` : `at ${r.withdrawalRate}% withdrawal`, help: 'targetNestEgg' });
     this.kpi(kpis, 'Estimated retirement', plan.estDate ? `${plan.estDate.getFullYear()}` : '—', { icon: 'calendar-clock', help: 'estimatedRetirement',
       sub: plan.estAge != null ? `Age ${plan.estAge.toFixed(1)} · goal ${plan.targetAge}` : 'Target not reached by age 100' });
@@ -5766,7 +5885,7 @@ class Dashboard {
     }
 
     const hist = invTimeline(d).filter((h) => h.retirement != null);
-    const hc = this.card(grid, 'Retirement balance history', { span: 3, sub: 'Monthly account history', tools: (tl) => {
+    const hc = this.card(grid, 'Retirement balance history', { span: 3, sub: plan.excluded && plan.excluded.length ? 'All retirement accounts, including linked pensions (as on Net Worth)' : 'Monthly account history', tools: (tl) => {
       if (this.embedded) return;
       if (invTabShown(d)) { const a = tl.createEl('a', { cls: 'fd-link', text: 'Growth details →', attr: { href: '#' } }); a.addEventListener('click', (e) => { e.preventDefault(); this.invView = 'group'; this.setTab('investments'); }); }
     } });
@@ -5831,6 +5950,7 @@ function statusColor(s) { return s === 'on-track' ? 'var(--color-green)' : s ===
 function retirementSentence(plan, f) {
   if (!plan.target) return 'Set a desired retirement income to calculate your target.';
   const at = `At ${plan.targetAge} you're projected to have ${f.money(plan.projectedAtTarget)} — ${Math.round(plan.ratio * 100)}% of your ${f.money(plan.target)} target, enough to support about ${f.money(plan.sustainableIncome / 12)}/mo.`;
+  if (plan.pastTarget) return `You're ${plan.age.toFixed(1)}, already past your target retirement age of ${plan.targetAge}. Your ${f.money(plan.balance)} is ${Math.round(plan.ratio * 100)}% of the ${f.money(plan.target)} target and supports about ${f.money(plan.sustainableIncome / 12)}/mo — set a later retirement age in Retirement goals to plan ahead.`;
   if (plan.status === 'on-track') return `${at} Keep contributing ${f.money(plan.contribution / 12)}/mo to stay on course.`;
   const gap = plan.requiredContribution - plan.contribution;
   return `${at} Raising contributions by ${f.money(gap / 12)}/mo (to ${f.money(plan.requiredContribution / 12)}/mo) would close the gap${plan.estAge ? `, or plan on retiring around ${Math.ceil(plan.estAge)}` : ''}.`;
@@ -5856,7 +5976,7 @@ function insights(d, f, plan) {
   const done = d.goals.filter((g) => goalInfo(g).done);
   for (const g of done.slice(0, 2)) out.push({ tone: 'good', text: `You reached your “${g.name}” goal.` });
   if (plan.target) out.push({ tone: plan.status === 'on-track' ? 'good' : plan.status === 'close' ? 'info' : 'bad',
-    text: plan.status === 'on-track' ? `Retirement is on track for age ${plan.targetAge}.` : `Retirement is ${Math.round(plan.ratio * 100)}% funded for age ${plan.targetAge}; add ${f.money(plan.requiredContribution - plan.contribution)}/yr to close the gap.` });
+    text: plan.status === 'on-track' ? `Retirement is on track for age ${plan.targetAge}.` : plan.pastTarget ? `You're past your target retirement age of ${plan.targetAge}; update it in Retirement goals.` : `Retirement is ${Math.round(plan.ratio * 100)}% funded for age ${plan.targetAge}; add ${f.money((plan.requiredContribution - plan.contribution) / 12)}/mo to close the gap.` });
   const cr = [...d.credit].sort((a, b) => a.date.localeCompare(b.date));
   if (cr.length >= 2) {
     const delta = cr[cr.length - 1].score - cr[cr.length - 2].score;
@@ -6777,7 +6897,7 @@ module.exports = class FinanceDashboardPlugin extends Plugin {
     new FormModal(this.app, {
       title: 'Retirement goals',
       intro: 'Projections are predictions in today’s dollars: growth uses your expected return minus inflation. Amounts are per month. Hover the (?) icons for what each setting means.',
-      values: Object.assign({}, r, { desiredMonthly: Math.round(num(r.annualIncome) / 12), ssMonthly: num(ssNow.monthly) || '', ssMode: ssNow.mode === 'exact' ? 'exact' : 'fra', ssStartAge: num(ssNow.startAge) || 67 }),
+      values: Object.assign({}, r, { desiredMonthly: Math.round(num(r.annualIncome) / 12 * 100) / 100, ssMonthly: num(ssNow.monthly) || '', ssMode: ssNow.mode === 'exact' ? 'exact' : 'fra', ssStartAge: num(ssNow.startAge) || 67 }),
       helpCtx: () => ({ plan: retirementPlan(this.data), f, r: this.data.retirement }),
       fields: [
         { key: 'birthDate', label: 'Date of birth', type: 'date', required: true, half: true },
@@ -6802,9 +6922,12 @@ module.exports = class FinanceDashboardPlugin extends Plugin {
         if (v.ssMonthly && (v.ssStartAge < 62 || v.ssStartAge > 70)) throw new Error('Social Security can start between ages 62 and 70.');
         return this.mutate((dd) => {
           const R = dd.retirement;
-          Object.assign(R, { birthDate: v.birthDate, targetAge: v.targetAge, annualIncome: Math.abs(num(v.desiredMonthly)) * 12, withdrawalRate: v.withdrawalRate,
+          // Only replace the yearly figure when the monthly amount was actually changed (avoids rounding drift).
+          const monthlyNow = Math.round(num(R.annualIncome) / 12 * 100) / 100;
+          const annualIncome = Math.abs(num(v.desiredMonthly)) === monthlyNow ? num(R.annualIncome) : Math.abs(num(v.desiredMonthly)) * 12;
+          Object.assign(R, { birthDate: v.birthDate, targetAge: v.targetAge, annualIncome, withdrawalRate: v.withdrawalRate,
             expectedReturn: v.expectedReturn, inflation: v.inflation, includeInvestments: v.includeInvestments });
-          R.socialSecurity = { monthly: Math.abs(num(v.ssMonthly)), mode: v.ssMode === 'exact' ? 'exact' : 'fra', startAge: clamp(num(v.ssStartAge) || 67, 62, 70) };
+          R.socialSecurity = { monthly: Math.abs(num(v.ssMonthly)), mode: v.ssMode === 'exact' ? 'exact' : 'fra', startAge: clamp(num(v.ssStartAge) || 67, 62, 70) };  // saving clears the "migrated" flag
         });
       },
     }).open();
