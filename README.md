@@ -102,6 +102,20 @@ Click **PDF report** at the top of the dashboard (to the right of **Import CSV**
 - **Spending & Savings:** the last 1, 3, 6 or 12 full months — spending by month and category against budgets, savings goals, and optionally every transaction.
 - **Appendix** (always): how every figure in the chosen reports is calculated, the settings used, numbered references with links (IRS, SSA, SEC/Investor.gov, CFPB, FINRA, research on withdrawal rates and returns) and a disclaimer.
 
+## Retirement income: Social Security, pensions and start ages
+
+Open **Edit goals** on the Retirement page (or **Edit income sources** on the *Retirement income plan* card). All amounts are **per month**, in today's dollars.
+
+- **Retire from work at age** — when you stop working and start drawing on savings.
+- **Desired monthly income in retirement.**
+- **Social Security** — enter your benefit **at full retirement age** (from your ssa.gov statement) and the age you'll start it (62–70). It's adjusted using SSA's rules: your full retirement age comes from your birth year; starting early lowers the benefit by 5/9 of 1% a month for the first 36 months and 5/12 of 1% after, and waiting adds 2/3 of 1% a month (8% a year) up to 70. For example, $3,000 at 67 becomes about $2,100 at 62, $2,600 at 65 and $3,720 at 70. Or choose *My benefit at the start age* to use an amount exactly as entered.
+- **Pensions** — add as many as you have, each with its **source** (e.g. a former employer or state plan), monthly benefit and start age.
+- **Double counting:** a pension can also be listed under Accounts (type *Pension*) with a balance. When you link that account to the pension, its balance is left out of your retirement savings and only the monthly benefit counts (it still counts in net worth). If a Pension account isn't linked while you have pension income, the goals form and the Retirement page warn that it may be counted twice.
+- **Retirement income plan** card: who pays your desired income at each age — e.g. *62–65: savings $7,000*; *65–67: pension $1,100 + savings $5,900*; *67 on: Social Security $3,000 + pension $1,100 + savings $2,900* — with a chart by age and your desired income as a line. "Money lasts until" draws savings down by those changing amounts.
+- **What-if:** each scenario's **Assumptions** can change the retirement age, desired income, Social Security amount and start age, and each pension's amount and start age (e.g. pension at 65, Social Security at 67). The scenario shows its own income plan next to your current plan, and *Start Social Security at 62 / 70* are quick ideas.
+- **Contributions** on every investment and retirement account are entered and shown **per month** (IRS limits are still checked per year).
+- Upgrading: an older single "Social Security / pension per year" amount becomes a Social Security amount used as entered, starting at your retirement age, so results don't change until you edit it.
+
 ## Retirement: explainer, term definitions, What-if planner and notes
 
 > **These are predictions, not guarantees.** Every retirement figure is an estimate based on your inputs and steady average returns, in today's dollars. Real markets, taxes, fees and life changes will make actual results differ. It's for planning only, not financial advice. This notice appears on the Retirement page, the Overview's retirement card, the explainer, the What-if planner and every page of the PDF.
@@ -181,7 +195,7 @@ Open the **gear icon → Past balances** (also in the snapshots list, Settings �
 
 - **Monthly account history.** Every time you update balances, each investment and retirement account's balance is saved for the month. Deleted accounts keep their history.
 - **Past balances.** Use **gear icon → Past balances** (see above). **Monthly history** (clock icon on the Investments page) lists every month so you can edit or delete one, and clicking a month on the growth chart opens it too.
-- **Money put in vs market growth.** Money put in is estimated from each account's yearly contribution (÷ 12 per month), plus accounts that were opened or rolled in, minus accounts closed. Market growth is the rest: ending − starting − money put in. **Estimated return** uses the Modified Dietz method: growth ÷ (start + ½ × money put in). You can turn the contribution estimate off in Settings → Investments.
+- **Money put in vs market growth.** Money put in is estimated from each account's monthly contribution, plus accounts that were opened or rolled in, minus accounts closed. Market growth is the rest: ending − starting − money put in. **Estimated return** uses the Modified Dietz method: growth ÷ (start + ½ × money put in). You can turn the contribution estimate off in Settings → Investments.
 - **Hover** any chart, KPI, trend line or change cell for the numbers behind it; underlined terms explain themselves; the **(?)** explainer shows each step with your numbers, notes on TOD and rollover accounts, and sources (Modified Dietz, Investor.gov, FINRA, IRS).
 - **Hide the tab** from the gear icon (**Dashboard pages → Investments tab**) or Settings → Investments if you don't want to track it. History keeps being saved, so nothing is lost if you turn it back on.
 - **Account types:** *TOD Individual* (investment) — an individual brokerage account with a transfer-on-death beneficiary, taxed like any brokerage account — and *Rollover IRA* (retirement) — a traditional IRA holding money rolled over from an employer plan, taxed when withdrawn.
@@ -191,9 +205,10 @@ Open the **gear icon → Past balances** (also in the snapshots list, Settings �
 Click the **gear icon** at the top right of the dashboard (or **Manage** on the Net Worth page's Accounts card, or the command **Manage accounts & assets**) to open the account manager:
 
 - See account count, assets, debts and net worth at a glance; search by name or type and filter by group.
+- **Account notes:** every account has an optional **Note** (e.g. where it's held, beneficiary, match rules). Notes show under the account name in the gear list, the Net Worth accounts table and the PDF report.
 - **Dashboard pages:** show or hide the **Investments** tab.
 - **Past balances:** enter on-budget, investment and retirement balances for an earlier month.
-- **Edit balances and yearly contributions inline** — changes save when you press Enter or leave the field (invalid entries are outlined in red, saved ones flash green).
+- **Edit balances and monthly contributions inline** — changes save when you press Enter or leave the field (invalid entries are outlined in red, saved ones flash green).
 - **Edit** (pencil) to rename or change group/type; **Delete** (trash) with a confirmation. Past monthly snapshots are kept when you delete.
 - **Add account** at the top, or the **+** beside a group heading to add one already set to that group.
 - **Categories, currency & data** jumps to the plugin's settings.
@@ -206,7 +221,7 @@ Pick a **Group** first — the **Account type** list updates to match (e.g. Reti
 
 - **Snapshots:** every time balances change, the current month's assets/debts/net worth is saved. To backfill history, use the pencil icon on the Net worth trend card.
 - **Account groups:** *On-budget* (checking, savings, cash), *Investment* (taxable), *Retirement*, *Property*, *Debt*. Debts are entered as positive amounts owed. Retirement accounts are grouped by type into tax-deferred, Roth, HSA and pension for the tax-treatment chart.
-- **Retirement projection** (today's dollars): target nest egg = (desired income − Social Security/pension) ÷ withdrawal rate. Balances grow at (return − inflation) with each retirement account's yearly contribution added monthly. **On track** = projected balance at your target age ≥ target; **Slightly behind** = 85–99%; **Off track** = below 85%. Estimated retirement age is when the projection first reaches the target.
+- **Retirement projection** (today's dollars): target nest egg = (what savings must cover each year once Social Security and every pension have started) ÷ withdrawal rate, plus the *bridge* — the cost of covering income that hasn't started yet between your retirement age and each start age. Balances grow at (return − inflation) with each retirement account's monthly contribution added every month. **On track** = projected balance at your target age ≥ target; **Slightly behind** = 85–99%; **Off track** = below 85%. Estimated retirement age is when the projection first reaches the target.
 - Spending vs last month compares month-to-date against the same day last month.
 
 ## Importing transactions (CSV)
