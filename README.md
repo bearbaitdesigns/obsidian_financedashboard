@@ -2,6 +2,8 @@
 
 Track net worth, credit score, spending, savings goals and retirement in a four-page dashboard inside Obsidian. Everything is stored locally in the plugin's `data.json` in your vault — nothing leaves your machine.
 
+**New here? Read the [User guide (PDF)](docs/Finance-Dashboard-User-Guide.pdf)**: setting up accounts, keeping your numbers up to date, and maintaining each page, with screenshots.
+
 ## Install
 
 ### With BRAT (recommended)
